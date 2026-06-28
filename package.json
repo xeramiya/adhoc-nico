@@ -1,0 +1,44 @@
+{
+  "name": "adhoc-nico",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "concurrently --names rr,pk --prefix-colors blue,magenta \"pnpm dev:rr\" \"pnpm dev:pk\"",
+    "dev:rr": "react-router dev",
+    "dev:pk": "npx partykit dev",
+    "start": "react-router-serve ./build/server/index.js",
+    "typecheck": "react-router typegen && tsc",
+    "lint": "oxlint .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "prepare": "panda codegen"
+  },
+  "dependencies": {
+    "@radix-ui/react-icons": "^1.3.2",
+    "@radix-ui/themes": "^3.3.0",
+    "@react-router/node": "8.0.0",
+    "@react-router/serve": "8.0.0",
+    "isbot": "^5.1.36",
+    "nanoid": "^5.1.16",
+    "partysocket": "^1.3.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router": "8.0.0"
+  },
+  "devDependencies": {
+    "@pandacss/dev": "^1.11.4",
+    "@react-router/dev": "8.0.0",
+    "@types/node": "^22",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "concurrently": "^10.0.3",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "partykit": "^0.0.115",
+    "postcss": "^8.5.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.3"
+  }
+}
