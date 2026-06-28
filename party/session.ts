@@ -12,9 +12,21 @@ type ConnectionMeta = {
   userId: string;
 };
 
+type WaveParticipant = {
+  waveType: number;
+  period: number;
+};
+
+type WaveInfo = {
+  waveType: number;
+  period: number;
+  count: number;
+};
+
 const MAX_COMMENTS = 500;
 const RATE_LIMIT_MS = 500;
 const MAX_COMMENT_LENGTH = 200;
+const WAVE_BROADCAST_INTERVAL = 500;
 
 export default class SessionServer implements Party.Server {
   sessionName = "";
@@ -27,6 +39,11 @@ export default class SessionServer implements Party.Server {
   connectionMeta = new Map<string, ConnectionMeta>();
   adminConnections = new Set<string>();
   lastCommentTime = new Map<string, number>();
+
+  waveEnabled = false;
+  waveParticipants = new Map<string, WaveParticipant>();
+  lastWaveBroadcast = 0;
+  waveBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(readonly room: Party.Room) {}
 
@@ -67,6 +84,8 @@ export default class SessionServer implements Party.Server {
           viewerCount: { total: this.totalViewers, active: this.activeViewers },
           notification: this.notification,
           kickedUserIds: [...this.kickedUserIds],
+          waveEnabled: this.waveEnabled,
+          waveData: this.aggregateWaveData(),
         },
       }),
     );
@@ -102,6 +121,18 @@ export default class SessionServer implements Party.Server {
       case "admin:bg-color":
         if (this.isAdmin(sender)) this.handleBgColor(msg.color as string);
         break;
+      case "admin:wave-toggle":
+        if (this.isAdmin(sender)) this.handleWaveToggle(msg.enabled as boolean);
+        break;
+      case "wave:join":
+        this.handleWaveJoin(meta.userId, msg.waveType as number);
+        break;
+      case "wave:leave":
+        this.handleWaveLeave(meta.userId);
+        break;
+      case "wave:period":
+        this.handleWavePeriod(meta.userId, msg.seconds as number, msg.waveType as number);
+        break;
     }
   }
 
@@ -112,6 +143,8 @@ export default class SessionServer implements Party.Server {
     if (meta.role === "viewer") {
       this.activeViewers = Math.max(0, this.activeViewers - 1);
       this.broadcastViewerCount();
+      this.waveParticipants.delete(meta.userId);
+      this.scheduleWaveBroadcast();
     }
 
     if (meta.role === "admin") {
@@ -164,6 +197,7 @@ export default class SessionServer implements Party.Server {
 
   private handleKick(userId: string) {
     this.kickedUserIds.add(userId);
+    this.waveParticipants.delete(userId);
     this.broadcast(JSON.stringify({ type: "user:kicked", userId }));
 
     for (const conn of this.room.getConnections()) {
@@ -189,6 +223,68 @@ export default class SessionServer implements Party.Server {
     if (!color || typeof color !== "string") return;
     this.bgColor = color;
     this.broadcast(JSON.stringify({ type: "bg-color", color }));
+  }
+
+  private handleWaveToggle(enabled: boolean) {
+    this.waveEnabled = enabled;
+    if (!enabled) {
+      this.waveParticipants.clear();
+    }
+    this.broadcast(JSON.stringify({ type: "wave:status", enabled }));
+    this.broadcastWaveData();
+  }
+
+  private handleWaveJoin(userId: string, waveType: number) {
+    if (!this.waveEnabled) return;
+    this.waveParticipants.set(userId, { waveType, period: 1 });
+    this.scheduleWaveBroadcast();
+  }
+
+  private handleWaveLeave(userId: string) {
+    this.waveParticipants.delete(userId);
+    this.scheduleWaveBroadcast();
+  }
+
+  private handleWavePeriod(userId: string, seconds: number, waveType: number) {
+    if (!this.waveEnabled) return;
+    const clamped = Math.max(0.3, Math.min(5, seconds));
+    this.waveParticipants.set(userId, { waveType, period: clamped });
+    this.scheduleWaveBroadcast();
+  }
+
+  private aggregateWaveData(): WaveInfo[] {
+    const groups = new Map<number, number[]>();
+    for (const p of this.waveParticipants.values()) {
+      const arr = groups.get(p.waveType) || [];
+      arr.push(p.period);
+      groups.set(p.waveType, arr);
+    }
+
+    const result: WaveInfo[] = [];
+    for (const [waveType, periods] of groups) {
+      periods.sort((a, b) => a - b);
+      const median = periods[Math.floor(periods.length / 2)];
+      result.push({ waveType, period: median, count: periods.length });
+    }
+    return result;
+  }
+
+  // スロットリング: 最大2回/秒
+  private scheduleWaveBroadcast() {
+    if (this.waveBroadcastTimer) return;
+    const now = Date.now();
+    const elapsed = now - this.lastWaveBroadcast;
+    const delay = Math.max(0, WAVE_BROADCAST_INTERVAL - elapsed);
+    this.waveBroadcastTimer = setTimeout(() => {
+      this.waveBroadcastTimer = null;
+      this.broadcastWaveData();
+    }, delay);
+  }
+
+  private broadcastWaveData() {
+    this.lastWaveBroadcast = Date.now();
+    const waves = this.aggregateWaveData();
+    this.broadcast(JSON.stringify({ type: "wave:data", waves }));
   }
 
   private broadcastViewerCount() {

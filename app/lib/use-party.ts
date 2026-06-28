@@ -1,6 +1,6 @@
 import { useReducer, useCallback, useRef, useEffect, useState } from "react";
 import usePartySocket from "partysocket/react";
-import type { Comment, ServerMessage, SessionState, ViewerCount } from "./protocol";
+import type { Comment, ServerMessage, ViewerCount, WaveInfo } from "./protocol";
 import { encodeMessage } from "./protocol";
 
 const PARTY_HOST = typeof window !== "undefined" && window.location.hostname === "localhost" ? "localhost:1999" : "";
@@ -13,6 +13,8 @@ type SessionClientState = {
   kickedUserIds: string[];
   sessionName: string;
   synced: boolean;
+  waveEnabled: boolean;
+  waveData: WaveInfo[];
 };
 
 const initialState: SessionClientState = {
@@ -23,6 +25,8 @@ const initialState: SessionClientState = {
   kickedUserIds: [],
   sessionName: "",
   synced: false,
+  waveEnabled: false,
+  waveData: [],
 };
 
 function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionClientState {
@@ -43,6 +47,10 @@ function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionC
       return { ...state, bgColor: msg.color };
     case "user:kicked":
       return { ...state, kickedUserIds: [...state.kickedUserIds, msg.userId] };
+    case "wave:status":
+      return { ...state, waveEnabled: msg.enabled, waveData: msg.enabled ? state.waveData : [] };
+    case "wave:data":
+      return { ...state, waveData: msg.waves };
     case "error":
       return state;
     default:
@@ -83,41 +91,52 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
   });
 
   const sendComment = useCallback(
-    (text: string) => {
-      socket.send(encodeMessage({ type: "comment:send", text }));
-    },
+    (text: string) => socket.send(encodeMessage({ type: "comment:send", text })),
     [socket],
   );
 
   const deleteComment = useCallback(
-    (commentId: string) => {
-      socket.send(encodeMessage({ type: "admin:delete-comment", commentId }));
-    },
+    (commentId: string) => socket.send(encodeMessage({ type: "admin:delete-comment", commentId })),
     [socket],
   );
 
   const kickUser = useCallback(
-    (userId: string) => {
-      socket.send(encodeMessage({ type: "admin:kick", userId }));
-    },
+    (targetId: string) => socket.send(encodeMessage({ type: "admin:kick", userId: targetId })),
     [socket],
   );
 
   const sendNotify = useCallback(
-    (text: string) => {
-      socket.send(encodeMessage({ type: "admin:notify", text }));
-    },
+    (text: string) => socket.send(encodeMessage({ type: "admin:notify", text })),
     [socket],
   );
 
-  const clearNotify = useCallback(() => {
-    socket.send(encodeMessage({ type: "admin:clear-notify" }));
-  }, [socket]);
+  const clearNotify = useCallback(
+    () => socket.send(encodeMessage({ type: "admin:clear-notify" })),
+    [socket],
+  );
 
   const setBgColor = useCallback(
-    (color: string) => {
-      socket.send(encodeMessage({ type: "admin:bg-color", color }));
-    },
+    (color: string) => socket.send(encodeMessage({ type: "admin:bg-color", color })),
+    [socket],
+  );
+
+  const toggleWave = useCallback(
+    (enabled: boolean) => socket.send(encodeMessage({ type: "admin:wave-toggle", enabled })),
+    [socket],
+  );
+
+  const joinWave = useCallback(
+    (waveType: number) => socket.send(encodeMessage({ type: "wave:join", waveType })),
+    [socket],
+  );
+
+  const leaveWave = useCallback(
+    () => socket.send(encodeMessage({ type: "wave:leave" })),
+    [socket],
+  );
+
+  const sendWavePeriod = useCallback(
+    (seconds: number, waveType: number) => socket.send(encodeMessage({ type: "wave:period", seconds, waveType })),
     [socket],
   );
 
@@ -130,6 +149,10 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     sendNotify,
     clearNotify,
     setBgColor,
+    toggleWave,
+    joinWave,
+    leaveWave,
+    sendWavePeriod,
     connectionStatus: socket.readyState,
   };
 }

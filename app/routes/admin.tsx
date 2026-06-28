@@ -23,6 +23,7 @@ import {
   Share1Icon,
   DesktopIcon,
   BellIcon,
+  ActivityLogIcon,
 } from "@radix-ui/react-icons";
 
 const PRESET_COLORS = ["#000000", "#252525", "#1a1a3e", "#1a3e1a"];
@@ -200,6 +201,33 @@ export default function Admin() {
                   通知をクリア
                 </Button>
               </Flex>
+            </Flex>
+          </Card>
+
+          {/* ウェーブコントロール */}
+          <Card>
+            <Flex direction="column" gap="2">
+              <Flex align="center" gap="2">
+                <ActivityLogIcon />
+                <Text size="2" weight="bold">ウェーブ</Text>
+              </Flex>
+              <Button
+                size="2"
+                variant={session.waveEnabled ? "solid" : "outline"}
+                color={session.waveEnabled ? "green" : "gray"}
+                onClick={() => session.toggleWave(!session.waveEnabled)}
+              >
+                {session.waveEnabled ? "ウェーブON" : "ウェーブOFF"}
+              </Button>
+              {session.waveEnabled && session.waveData.length > 0 && (
+                <Flex direction="column" gap="1">
+                  {session.waveData.map((w) => (
+                    <Text key={w.waveType} size="1" color="gray">
+                      タイプ{w.waveType + 1}: {w.count}人 / {w.period.toFixed(2)}秒
+                    </Text>
+                  ))}
+                </Flex>
+              )}
             </Flex>
           </Card>
 

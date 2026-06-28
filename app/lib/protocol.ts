@@ -10,6 +10,19 @@ export type ViewerCount = {
   active: number;
 };
 
+export type WaveInfo = {
+  waveType: number;
+  period: number;
+  count: number;
+};
+
+export const WAVE_PATTERNS = [
+  "下广卞廿十亠卉与本二上旦上二本与卉亠十廿卞广",
+  "▁▂▃▅▆▇▇▆▅▃▂▁",
+  "➫➙➬➭➫➙➬➮➪",
+  "↗⁀↘‿↗⁀↘‿",
+];
+
 export type SessionState = {
   sessionName: string;
   comments: Comment[];
@@ -17,6 +30,8 @@ export type SessionState = {
   viewerCount: ViewerCount;
   notification: string | null;
   kickedUserIds: string[];
+  waveEnabled: boolean;
+  waveData: WaveInfo[];
 };
 
 export type ClientMessage =
@@ -25,7 +40,11 @@ export type ClientMessage =
   | { type: "admin:kick"; userId: string }
   | { type: "admin:notify"; text: string }
   | { type: "admin:clear-notify" }
-  | { type: "admin:bg-color"; color: string };
+  | { type: "admin:bg-color"; color: string }
+  | { type: "admin:wave-toggle"; enabled: boolean }
+  | { type: "wave:join"; waveType: number }
+  | { type: "wave:leave" }
+  | { type: "wave:period"; seconds: number; waveType: number };
 
 export type ServerMessage =
   | { type: "sync"; state: SessionState }
@@ -36,6 +55,8 @@ export type ServerMessage =
   | { type: "notify"; text: string }
   | { type: "notify:clear" }
   | { type: "bg-color"; color: string }
+  | { type: "wave:status"; enabled: boolean }
+  | { type: "wave:data"; waves: WaveInfo[] }
   | { type: "error"; message: string };
 
 export function encodeMessage(msg: ClientMessage | ServerMessage): string {

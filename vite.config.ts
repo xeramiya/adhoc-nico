@@ -5,5 +5,6 @@ export default defineConfig({
   plugins: [reactRouter()],
   resolve: {
     tsconfigPaths: true,
+    dedupe: ["react", "react-dom"],
   },
 });

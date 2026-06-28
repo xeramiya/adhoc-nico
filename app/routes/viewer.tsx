@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams } from "react-router";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
+import { useShake } from "~/lib/use-shake";
 import { getUserId, formatTime, isUrlLine } from "~/lib/utils";
+import { WAVE_PATTERNS } from "~/lib/protocol";
 import { MarqueeText } from "~/components/marquee-text";
 import {
   Button,
@@ -12,6 +14,7 @@ import {
   Box,
   Text,
   IconButton,
+  Select,
 } from "@radix-ui/themes";
 import { PaperPlaneIcon, DotsHorizontalIcon } from "@radix-ui/react-icons";
 
@@ -33,12 +36,8 @@ function loadComments(sessionId: string): LocalComment[] {
 function saveComment(sessionId: string, comment: LocalComment) {
   const list = loadComments(sessionId);
   list.push(comment);
-  // 最新20件のみ保持
   const trimmed = list.slice(-MAX_HISTORY);
-  localStorage.setItem(
-    `adhoc-nico-comments-${sessionId}`,
-    JSON.stringify(trimmed),
-  );
+  localStorage.setItem(`adhoc-nico-comments-${sessionId}`, JSON.stringify(trimmed));
 }
 
 export default function Viewer() {
@@ -51,21 +50,51 @@ export default function Viewer() {
   const [localComments, setLocalComments] = useState<LocalComment[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [waveJoined, setWaveJoined] = useState(false);
+  const [waveType, setWaveType] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isKicked = session.kickedUserIds.includes(userId);
+  const { period, permissionNeeded, requestPermission } = useShake(waveJoined);
 
-  // ローカルコメント読み込み
   useEffect(() => {
     if (sessionId) setLocalComments(loadComments(sessionId));
   }, [sessionId]);
+
+  // ウェーブ無効時に自動離脱
+  useEffect(() => {
+    if (!session.waveEnabled && waveJoined) {
+      setWaveJoined(false);
+      session.leaveWave();
+    }
+  }, [session.waveEnabled, waveJoined, session]);
+
+  // 周期変更をサーバーに送信
+  useEffect(() => {
+    if (waveJoined && period != null) {
+      session.sendWavePeriod(period, waveType);
+    }
+  }, [period, waveJoined, waveType, session]);
+
+  const handleJoinWave = useCallback(async () => {
+    if (permissionNeeded) {
+      const granted = await requestPermission();
+      if (!granted) return;
+    }
+    setWaveJoined(true);
+    session.joinWave(waveType);
+  }, [permissionNeeded, requestPermission, session, waveType]);
+
+  const handleLeaveWave = useCallback(() => {
+    setWaveJoined(false);
+    session.leaveWave();
+  }, [session]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed || sending || isKicked) return;
 
     session.sendComment(trimmed);
-
     const comment: LocalComment = { text: trimmed, timestamp: Date.now() };
     saveComment(sessionId!, comment);
     setLocalComments((prev) => [...prev, comment].slice(-MAX_HISTORY));
@@ -73,8 +102,6 @@ export default function Viewer() {
     setText("");
     setSending(true);
     setTimeout(() => setSending(false), 500);
-
-    // フォーカス維持
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [text, sending, isKicked, session, sessionId]);
 
@@ -89,7 +116,6 @@ export default function Viewer() {
     ? localComments.slice(-MAX_HISTORY)
     : localComments.slice(-COLLAPSED_COUNT);
 
-  // 通知テキストを行ごとに分割して表示
   const renderNotification = (notifText: string) =>
     notifText.split("\n").map((line, i) =>
       isUrlLine(line) ? (
@@ -98,83 +124,65 @@ export default function Viewer() {
           href={line.trim()}
           target="_blank"
           rel="noopener noreferrer"
-          className={css({
-            color: "#8b9cf7",
-            textDecoration: "underline",
-            wordBreak: "break-all",
-            display: "block",
-          })}
+          className={css({ color: "#8b9cf7", textDecoration: "underline", wordBreak: "break-all", display: "block" })}
         >
           {line.trim()}
         </a>
       ) : (
-        <span key={i} className={css({ display: "block" })}>
-          {line}
-        </span>
+        <span key={i} className={css({ display: "block" })}>{line}</span>
       ),
     );
 
   return (
-    <Box
-      className={css({
-        backgroundColor: "#000",
-        height: "100dvh",
-        display: "flex",
-        flexDirection: "column",
-        color: "#fff",
-        overflow: "hidden",
-      })}
-    >
+    <Box className={css({ backgroundColor: "#000", height: "100dvh", display: "flex", flexDirection: "column", color: "#fff", overflow: "hidden" })}>
       {/* 通知エリア */}
       {session.notification && (
-        <Box
-          className={css({
-            backgroundColor: "rgba(139,92,246,0.2)",
-            borderBottom: "1px solid rgba(139,92,246,0.4)",
-            padding: "10px 16px",
-            animation: "slideDown 0.3s ease-out",
-          })}
-        >
+        <Box className={css({ backgroundColor: "rgba(139,92,246,0.2)", borderBottom: "1px solid rgba(139,92,246,0.4)", padding: "10px 16px", animation: "slideDown 0.3s ease-out" })}>
           <Text size="2">{renderNotification(session.notification)}</Text>
+        </Box>
+      )}
+
+      {/* ウェーブ参加エリア */}
+      {session.waveEnabled && !isKicked && !waveJoined && (
+        <Box className={css({ backgroundColor: "rgba(34,197,94,0.15)", borderBottom: "1px solid rgba(34,197,94,0.3)", padding: "10px 16px", animation: "slideDown 0.3s ease-out" })}>
+          <Flex align="center" justify="between">
+            <Text size="2">🌊 ウェーブが始まりました！</Text>
+            <Button size="1" variant="solid" color="green" onClick={handleJoinWave}>
+              参加する
+            </Button>
+          </Flex>
+        </Box>
+      )}
+
+      {/* ウェーブ参加中表示 */}
+      {waveJoined && (
+        <Box className={css({ backgroundColor: "rgba(34,197,94,0.25)", borderBottom: "1px solid rgba(34,197,94,0.4)", padding: "10px 16px" })}>
+          <Flex align="center" justify="between">
+            <Flex direction="column" gap="1">
+              <Text size="2">🌊 ウェーブ参加中 — スマホを振ってください！</Text>
+              {period != null && (
+                <Text size="1" color="gray">周期: {period.toFixed(2)}秒</Text>
+              )}
+            </Flex>
+            <Button size="1" variant="soft" color="red" onClick={handleLeaveWave}>
+              やめる
+            </Button>
+          </Flex>
         </Box>
       )}
 
       {/* エラー表示 */}
       {session.error && (
-        <Box
-          className={css({
-            backgroundColor: "rgba(239,68,68,0.2)",
-            borderBottom: "1px solid rgba(239,68,68,0.4)",
-            padding: "8px 16px",
-            animation: "slideDown 0.2s ease-out",
-          })}
-        >
-          <Text size="2" color="red">
-            {session.error}
-          </Text>
+        <Box className={css({ backgroundColor: "rgba(239,68,68,0.2)", borderBottom: "1px solid rgba(239,68,68,0.4)", padding: "8px 16px", animation: "slideDown 0.2s ease-out" })}>
+          <Text size="2" color="red">{session.error}</Text>
         </Box>
       )}
 
       {/* メインエリア */}
-      <Flex
-        direction="column"
-        className={css({ flex: 1, padding: "16px", gap: "12px", overflow: "auto" })}
-      >
-        {/* キック通知 */}
+      <Flex direction="column" className={css({ flex: 1, padding: "16px", gap: "12px", overflow: "auto" })}>
         {isKicked ? (
-          <Box
-            className={css({
-              textAlign: "center",
-              padding: "32px 16px",
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            })}
-          >
-            <Text size="3" color="red">
-              管理者によって退出されました
-            </Text>
+          <Box className={css({ textAlign: "center", padding: "32px 16px", flex: 1, display: "flex", alignItems: "center", justifyContent: "center" })}>
+            <Text size="3" color="red">管理者によって退出されました</Text>
           </Box>
         ) : (
           <>
@@ -184,25 +192,14 @@ export default function Viewer() {
                 ref={textareaRef}
                 placeholder="コメントを入力..."
                 value={text}
-                onChange={(e) => {
-                  if (e.target.value.length <= MAX_CHARS) setText(e.target.value);
-                }}
+                onChange={(e) => { if (e.target.value.length <= MAX_CHARS) setText(e.target.value); }}
                 onKeyDown={handleKeyDown}
                 rows={2}
-                className={css({
-                  fontSize: "16px !important",
-                  resize: "none",
-                })}
+                className={css({ fontSize: "16px !important", resize: "none" })}
               />
               <Flex justify="between" align="center">
-                <Text size="1" color="gray">
-                  {text.length}/{MAX_CHARS}
-                </Text>
-                <Button
-                  size="2"
-                  disabled={!text.trim() || sending}
-                  onClick={handleSend}
-                >
+                <Text size="1" color="gray">{text.length}/{MAX_CHARS}</Text>
+                <Button size="2" disabled={!text.trim() || sending} onClick={handleSend}>
                   <PaperPlaneIcon />
                   送信
                 </Button>
@@ -212,46 +209,17 @@ export default function Viewer() {
             {/* 送信済みコメント一覧 */}
             {localComments.length > 0 && (
               <Flex direction="column" gap="1">
-                <Text size="1" color="gray" mb="1">
-                  送信済み
-                </Text>
+                <Text size="1" color="gray" mb="1">送信済み</Text>
                 {displayedComments.map((c, i) => (
-                  <Flex
-                    key={`${c.timestamp}-${i}`}
-                    gap="2"
-                    align="start"
-                    className={css({
-                      padding: "4px 8px",
-                      borderRadius: "4px",
-                      backgroundColor: "rgba(255,255,255,0.04)",
-                    })}
-                  >
-                    <Text
-                      size="1"
-                      color="gray"
-                      className={css({
-                        flexShrink: 0,
-                        fontFamily: "monospace",
-                        lineHeight: "1.6",
-                      })}
-                    >
+                  <Flex key={`${c.timestamp}-${i}`} gap="2" align="start" className={css({ padding: "4px 8px", borderRadius: "4px", backgroundColor: "rgba(255,255,255,0.04)" })}>
+                    <Text size="1" color="gray" className={css({ flexShrink: 0, fontFamily: "monospace", lineHeight: "1.6" })}>
                       {formatTime(c.timestamp)}
                     </Text>
-                    <Text
-                      size="2"
-                      className={css({ wordBreak: "break-all" })}
-                    >
-                      {c.text}
-                    </Text>
+                    <Text size="2" className={css({ wordBreak: "break-all" })}>{c.text}</Text>
                   </Flex>
                 ))}
                 {localComments.length > COLLAPSED_COUNT && (
-                  <Button
-                    variant="ghost"
-                    size="1"
-                    onClick={() => setExpanded((v) => !v)}
-                    className={css({ alignSelf: "center" })}
-                  >
+                  <Button variant="ghost" size="1" onClick={() => setExpanded((v) => !v)} className={css({ alignSelf: "center" })}>
                     {expanded ? "閉じる" : "もっと見る"}
                   </Button>
                 )}
@@ -262,19 +230,8 @@ export default function Viewer() {
       </Flex>
 
       {/* ボトムバー */}
-      <Flex
-        align="center"
-        className={css({
-          borderTop: "1px solid rgba(255,255,255,0.1)",
-          padding: "8px 16px",
-          gap: "8px",
-          flexShrink: 0,
-        })}
-      >
-        <MarqueeText
-          text={session.sessionName || "---"}
-          className={css({ flex: 1, fontSize: "13px", color: "rgba(255,255,255,0.6)" })}
-        />
+      <Flex align="center" className={css({ borderTop: "1px solid rgba(255,255,255,0.1)", padding: "8px 16px", gap: "8px", flexShrink: 0 })}>
+        <MarqueeText text={session.sessionName || "---"} className={css({ flex: 1, fontSize: "13px", color: "rgba(255,255,255,0.6)" })} />
         <Dialog.Root open={menuOpen} onOpenChange={setMenuOpen}>
           <Dialog.Trigger>
             <IconButton variant="ghost" size="1" color="gray">
@@ -285,22 +242,40 @@ export default function Viewer() {
             <Dialog.Title>メニュー</Dialog.Title>
             <Flex direction="column" gap="3" py="2">
               <Flex direction="column" gap="1">
-                <Text size="1" color="gray">
-                  あなたのID
-                </Text>
-                <Text
-                  size="2"
-                  className={css({ fontFamily: "monospace", userSelect: "all" })}
-                >
-                  {userId}
-                </Text>
+                <Text size="1" color="gray">あなたのID</Text>
+                <Text size="2" className={css({ fontFamily: "monospace", userSelect: "all" })}>{userId}</Text>
               </Flex>
+              {/* ウェーブ種類選択 */}
+              <Flex direction="column" gap="1">
+                <Text size="1" color="gray">ウェーブの種類</Text>
+                <Select.Root
+                  value={String(waveType)}
+                  onValueChange={(v) => {
+                    const newType = Number(v);
+                    setWaveType(newType);
+                    if (waveJoined) session.joinWave(newType);
+                  }}
+                >
+                  <Select.Trigger />
+                  <Select.Content>
+                    {WAVE_PATTERNS.map((p, i) => (
+                      <Select.Item key={i} value={String(i)}>
+                        タイプ{i + 1}: {p.slice(0, 6)}...
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Root>
+              </Flex>
+              {/* ウェーブ離脱 */}
+              {waveJoined && (
+                <Button variant="soft" color="red" onClick={() => { handleLeaveWave(); setMenuOpen(false); }}>
+                  ウェーブを抜ける
+                </Button>
+              )}
             </Flex>
             <Flex justify="end" mt="3">
               <Dialog.Close>
-                <Button variant="soft" color="gray">
-                  閉じる
-                </Button>
+                <Button variant="soft" color="gray">閉じる</Button>
               </Dialog.Close>
             </Flex>
           </Dialog.Content>

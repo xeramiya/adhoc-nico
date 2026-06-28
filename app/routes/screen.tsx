@@ -8,7 +8,7 @@ const IDLE_TIMEOUT = 2000;
 
 export default function Screen() {
   const { sessionId } = useParams();
-  const { comments, bgColor, synced } = useSession(
+  const { comments, bgColor, synced, waveData } = useSession(
     sessionId!,
     "screen",
     "screen-display",
@@ -66,7 +66,7 @@ export default function Screen() {
         cursor: cursorHidden ? "none" : "default",
       }}
     >
-      <CommentCanvas comments={comments} synced={synced} />
+      <CommentCanvas comments={comments} synced={synced} waveData={waveData} />
     </div>
   );
 }
