@@ -11,3 +11,6 @@
 
 # PartyKit
 /.partykit/
+
+# Dev HTTPS cert
+/.cert/

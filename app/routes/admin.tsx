@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
 import { formatTime } from "~/lib/utils";
@@ -24,9 +26,25 @@ import {
   DesktopIcon,
   BellIcon,
   ActivityLogIcon,
+  CopyIcon,
+  CheckIcon,
 } from "@radix-ui/react-icons";
 
 const PRESET_COLORS = ["#000000", "#252525", "#1a1a3e", "#1a3e1a"];
+const MAX_DISPLAY_COMMENTS = 200;
+
+function generateQrSvg(url: string): string {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  flushSync(() => {
+    root.render(
+      <QRCodeSVG value={url} size={120} bgColor="transparent" fgColor="#ffffff" level="M" />,
+    );
+  });
+  const svg = container.innerHTML;
+  root.unmount();
+  return svg;
+}
 
 export default function Admin() {
   const { sessionId } = useParams();
@@ -37,17 +55,23 @@ export default function Admin() {
   const [notifyText, setNotifyText] = useState("");
   const [qrOpen, setQrOpen] = useState(false);
   const [kickTarget, setKickTarget] = useState<string | null>(null);
+  const [idCopied, setIdCopied] = useState(false);
 
   const isConnected = session.connectionStatus === WebSocket.OPEN;
+  const isLocal = typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
   const audienceUrl =
     typeof window !== "undefined"
-      ? `${window.location.origin}/${sessionId}`
+      ? isLocal
+        ? `${window.location.protocol}//${__DEV_LAN_IP__}:${window.location.port}/${sessionId}`
+        : `${window.location.origin}/${sessionId}`
       : "";
 
-  const reversedComments = [...session.comments].reverse();
+  const reversedComments = [...session.comments].reverse().slice(0, MAX_DISPLAY_COMMENTS);
 
   return (
-    <Box p="4" className={css({ maxWidth: "1200px", margin: "0 auto", height: "100vh", display: "flex", flexDirection: "column" })}>
+    <Box className={css({ height: "100vh", overflow: "hidden", backgroundColor: "#1e1e2e" })}>
+    <Box p="4" className={css({ maxWidth: "1200px", margin: "0 auto", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" })}>
       {/* トップバー */}
       <Card mb="3">
         <Flex align="center" justify="between" wrap="wrap" gap="3">
@@ -76,6 +100,20 @@ export default function Admin() {
             <Button variant="soft" onClick={() => setQrOpen(true)}>
               <Share1Icon />
               QRコードを表示
+            </Button>
+            <Button
+              variant={session.qrVisible ? "solid" : "soft"}
+              color={session.qrVisible ? "green" : undefined}
+              onClick={() => {
+                if (session.qrVisible) {
+                  session.toggleQr(false);
+                } else {
+                  const svg = generateQrSvg(audienceUrl);
+                  session.toggleQr(true, svg);
+                }
+              }}
+            >
+              画面にQR{session.qrVisible ? "ON" : "OFF"}
             </Button>
           </Flex>
         </Flex>
@@ -159,7 +197,7 @@ export default function Admin() {
         </Box>
 
         {/* サイドパネル */}
-        <Box className={css({ width: { base: "100%", lg: "320px" }, flexShrink: 0, display: "flex", flexDirection: "column", gap: "12px" })}>
+        <Box className={css({ width: { base: "100%", lg: "320px" }, flexShrink: 0, display: "flex", flexDirection: "column", gap: "12px", overflow: "auto" })}>
           {/* 通知パネル */}
           <Card>
             <Flex direction="column" gap="2">
@@ -261,11 +299,11 @@ export default function Admin() {
                       width: "28px",
                       height: "28px",
                       borderRadius: "4px",
-                      border: session.bgColor === color ? "2px solid #8b5cf6" : "2px solid rgba(255,255,255,0.15)",
+                      border: session.bgColor === color ? "2px solid #f33968" : "2px solid rgba(255,255,255,0.15)",
                       backgroundColor: color,
                       cursor: "pointer",
                       transition: "border-color 0.15s",
-                      "&:hover": { borderColor: "#8b5cf6" },
+                      "&:hover": { borderColor: "#f33968" },
                     })}
                   />
                 ))}
@@ -287,6 +325,25 @@ export default function Admin() {
             >
               {audienceUrl}
             </Text>
+          </Flex>
+          <Separator size="4" />
+          <Flex align="center" gap="2" justify="center">
+            <Text size="2" color="gray">セッションID:</Text>
+            <Text size="2" weight="bold" className={css({ fontFamily: "monospace" })}>
+              {sessionId}
+            </Text>
+            <IconButton
+              size="1"
+              variant="ghost"
+              onClick={() => {
+                navigator.clipboard.writeText(sessionId!);
+                setIdCopied(true);
+                setTimeout(() => setIdCopied(false), 2000);
+              }}
+              title="IDをコピー"
+            >
+              {idCopied ? <CheckIcon /> : <CopyIcon />}
+            </IconButton>
           </Flex>
           <Flex justify="end">
             <Dialog.Close>
@@ -321,6 +378,7 @@ export default function Admin() {
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
+    </Box>
     </Box>
   );
 }

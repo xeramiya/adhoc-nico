@@ -1,0 +1,137 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 280px;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    Meiryo, sans-serif;
+  background: #1e1e2e;
+  color: #cdd6f4;
+}
+
+.container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+h1 {
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  color: #f33968;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #181825;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+}
+
+.dot.on {
+  background: #22c55e;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field label {
+  font-size: 12px;
+  color: #a6adc8;
+}
+
+.field input {
+  padding: 8px 10px;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  background: #313244;
+  color: #cdd6f4;
+  font-size: 13px;
+  outline: none;
+  font-family: monospace;
+}
+
+.field input:focus {
+  border-color: #f33968;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: #f33968;
+  color: white;
+}
+
+.btn.primary:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.btn.danger {
+  background: #45475a;
+  color: #f38ba8;
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: #585b70;
+}
+
+.tab-section {
+  border-top: 1px solid #45475a;
+  padding-top: 12px;
+}
+
+.btn.tab-toggle {
+  background: #313244;
+  color: #cdd6f4;
+}
+
+.btn.tab-toggle:hover:not(:disabled) {
+  background: #45475a;
+}
+
+.btn.tab-toggle.active {
+  background: #22c55e;
+  color: #1e1e2e;
+}
+
+.btn.tab-toggle.active:hover:not(:disabled) {
+  opacity: 0.85;
+}

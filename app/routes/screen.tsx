@@ -3,16 +3,26 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
 import { CommentCanvas } from "~/components/comment-canvas";
+import { QRCodeSVG } from "qrcode.react";
 
 const IDLE_TIMEOUT = 2000;
 
 export default function Screen() {
   const { sessionId } = useParams();
-  const { comments, bgColor, synced, waveData } = useSession(
+  const { comments, bgColor, synced, waveData, waveUsers, qrVisible } = useSession(
     sessionId!,
     "screen",
     "screen-display",
   );
+
+  const isLocal = typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
+  const audienceUrl =
+    typeof window !== "undefined"
+      ? isLocal
+        ? `${window.location.protocol}//${__DEV_LAN_IP__}:${window.location.port}/${sessionId}`
+        : `${window.location.origin}/${sessionId}`
+      : "";
 
   const containerRef = useRef<HTMLDivElement>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -66,7 +76,21 @@ export default function Screen() {
         cursor: cursorHidden ? "none" : "default",
       }}
     >
-      <CommentCanvas comments={comments} synced={synced} waveData={waveData} />
+      <CommentCanvas comments={comments} synced={synced} waveData={waveData} waveUsers={waveUsers} />
+      {qrVisible && audienceUrl && (
+        <div
+          className={css({
+            position: "absolute",
+            bottom: "32px",
+            left: "32px",
+            pointerEvents: "none",
+            zIndex: 10,
+            filter: "drop-shadow(0 0 8px rgba(255,255,255,0.3))",
+          })}
+        >
+          <QRCodeSVG value={audienceUrl} size={120} bgColor="transparent" fgColor="#ffffff" level="M" />
+        </div>
+      )}
     </div>
   );
 }

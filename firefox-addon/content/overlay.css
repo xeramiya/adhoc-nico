@@ -1,0 +1,55 @@
+#adhoc-nico-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 2147483647;
+  overflow: hidden;
+}
+
+.adhoc-nico-comment {
+  position: absolute;
+  left: 0;
+  white-space: nowrap;
+  color: white;
+  font-size: 36px;
+  font-weight: bold;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    Meiryo, sans-serif;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+  will-change: transform;
+  pointer-events: none;
+  animation: adhoc-nico-flow 5s linear forwards;
+}
+
+.adhoc-nico-wave {
+  position: absolute;
+  left: 0;
+  white-space: nowrap;
+  font-size: 32px;
+  font-weight: bold;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    Meiryo, sans-serif;
+  will-change: transform;
+  pointer-events: none;
+  animation: adhoc-nico-flow linear forwards;
+}
+
+.adhoc-nico-qr {
+  position: absolute;
+  bottom: 32px;
+  left: 32px;
+  pointer-events: none;
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.3));
+}
+
+@keyframes adhoc-nico-flow {
+  0% {
+    transform: translateX(100vw);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}

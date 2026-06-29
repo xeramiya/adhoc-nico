@@ -2,6 +2,9 @@
   "$schema": "https://www.partykit.io/schema.json",
   "name": "adhoc-nico",
   "main": "party/session.ts",
+  "parties": {
+    "session": "party/session.ts"
+  },
   "port": 1999,
   "compatibilityDate": "2024-12-01"
 }

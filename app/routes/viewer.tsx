@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams } from "react-router";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
-import { useShake } from "~/lib/use-shake";
+import { useShake, requestMotionPermission, type MotionPermissionResult } from "~/lib/use-shake";
 import { getUserId, formatTime, isUrlLine } from "~/lib/utils";
 import { WAVE_PATTERNS } from "~/lib/protocol";
 import { MarqueeText } from "~/components/marquee-text";
@@ -51,44 +51,81 @@ export default function Viewer() {
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [waveJoined, setWaveJoined] = useState(false);
-  const [waveType, setWaveType] = useState(0);
+  const [waveType, setWaveType] = useState(1);
+  const [motionError, setMotionError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isKicked = session.kickedUserIds.includes(userId);
-  const { period, permissionNeeded, requestPermission } = useShake(waveJoined);
+  const { period, sensorActive } = useShake(waveJoined);
+  const { waveEnabled, joinWave, leaveWave, sendWavePeriod, sendWaveIdle } = session;
+  const hadPeriodRef = useRef(false);
 
   useEffect(() => {
     if (sessionId) setLocalComments(loadComments(sessionId));
   }, [sessionId]);
 
+  // ウェーブ参加時にiOSの「取り消す」ダイアログを抑制
+  useEffect(() => {
+    if (!waveJoined) return;
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
+    const preventUndo = (e: Event) => {
+      const ie = e as InputEvent;
+      if (ie.inputType === "historyUndo" || ie.inputType === "historyRedo") {
+        ie.preventDefault();
+      }
+    };
+
+    document.addEventListener("beforeinput", preventUndo, true);
+    return () => {
+      document.removeEventListener("beforeinput", preventUndo, true);
+    };
+  }, [waveJoined]);
+
   // ウェーブ無効時に自動離脱
   useEffect(() => {
-    if (!session.waveEnabled && waveJoined) {
+    if (!waveEnabled && waveJoined) {
       setWaveJoined(false);
-      session.leaveWave();
+      leaveWave();
     }
-  }, [session.waveEnabled, waveJoined, session]);
+  }, [waveEnabled, waveJoined, leaveWave]);
 
-  // 周期変更をサーバーに送信
+  // 周期変更をサーバーに送信 / 周期消失時にidle通知
   useEffect(() => {
-    if (waveJoined && period != null) {
-      session.sendWavePeriod(period, waveType);
+    if (!waveJoined) {
+      hadPeriodRef.current = false;
+      return;
     }
-  }, [period, waveJoined, waveType, session]);
+    if (period != null) {
+      hadPeriodRef.current = true;
+      sendWavePeriod(period, waveType);
+    } else if (hadPeriodRef.current) {
+      sendWaveIdle();
+    }
+  }, [period, waveJoined, waveType, sendWavePeriod, sendWaveIdle]);
 
   const handleJoinWave = useCallback(async () => {
-    if (permissionNeeded) {
-      const granted = await requestPermission();
-      if (!granted) return;
+    setMotionError(null);
+    const result = await requestMotionPermission();
+    if (result === "unavailable") {
+      setMotionError("このデバイスでは加速度センサーが使用できません。");
+      return;
+    }
+    if (result === "denied") {
+      setMotionError("加速度センサーの使用が許可されていません。iOSの場合: 設定→Safari→モーションと画面の向きのアクセスを有効にしてください。");
+      return;
     }
     setWaveJoined(true);
-    session.joinWave(waveType);
-  }, [permissionNeeded, requestPermission, session, waveType]);
+    joinWave(waveType);
+  }, [joinWave, waveType]);
 
   const handleLeaveWave = useCallback(() => {
     setWaveJoined(false);
-    session.leaveWave();
-  }, [session]);
+    leaveWave();
+  }, [leaveWave]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
@@ -113,8 +150,8 @@ export default function Viewer() {
   };
 
   const displayedComments = expanded
-    ? localComments.slice(-MAX_HISTORY)
-    : localComments.slice(-COLLAPSED_COUNT);
+    ? [...localComments.slice(-MAX_HISTORY)].reverse()
+    : [...localComments.slice(-COLLAPSED_COUNT)].reverse();
 
   const renderNotification = (notifText: string) =>
     notifText.split("\n").map((line, i) =>
@@ -138,18 +175,23 @@ export default function Viewer() {
       {/* 通知エリア */}
       {session.notification && (
         <Box className={css({ backgroundColor: "rgba(139,92,246,0.2)", borderBottom: "1px solid rgba(139,92,246,0.4)", padding: "10px 16px", animation: "slideDown 0.3s ease-out" })}>
-          <Text size="2">{renderNotification(session.notification)}</Text>
+          <Text size="3">{renderNotification(session.notification)}</Text>
         </Box>
       )}
 
       {/* ウェーブ参加エリア */}
       {session.waveEnabled && !isKicked && !waveJoined && (
         <Box className={css({ backgroundColor: "rgba(34,197,94,0.15)", borderBottom: "1px solid rgba(34,197,94,0.3)", padding: "10px 16px", animation: "slideDown 0.3s ease-out" })}>
-          <Flex align="center" justify="between">
-            <Text size="2">🌊 ウェーブが始まりました！</Text>
-            <Button size="1" variant="solid" color="green" onClick={handleJoinWave}>
-              参加する
-            </Button>
+          <Flex direction="column" gap="2">
+            <Flex align="center" justify="between">
+              <Text size="3">🌊 ウェーブが始まりました！</Text>
+              <Button size="2" variant="solid" color="green" onClick={handleJoinWave}>
+                参加する
+              </Button>
+            </Flex>
+            {motionError && (
+              <Text size="2" color="red">{motionError}</Text>
+            )}
           </Flex>
         </Box>
       )}
@@ -159,13 +201,21 @@ export default function Viewer() {
         <Box className={css({ backgroundColor: "rgba(34,197,94,0.25)", borderBottom: "1px solid rgba(34,197,94,0.4)", padding: "10px 16px" })}>
           <Flex align="center" justify="between">
             <Flex direction="column" gap="1">
-              <Text size="2">🌊 ウェーブ参加中 — スマホを振ってください！</Text>
-              {period != null && (
-                <Text size="1" color="gray">周期: {period.toFixed(2)}秒</Text>
+              <Text size="3">🌊 ウェーブ参加中 — スマホを振ってください！</Text>
+              {period != null ? (
+                <Text size="2" color="gray">
+                  周期検知中: {period.toFixed(2)}秒 ({(60 / period).toFixed(0)} BPM)
+                </Text>
+              ) : sensorActive ? (
+                <Text size="2" color="gray">周期未検知 — 振り続けてください</Text>
+              ) : (
+                <Text size="2" className={css({ color: "#eab308" })}>
+                  センサー待機中... 反応がない場合はHTTPS接続か確認してください
+                </Text>
               )}
             </Flex>
-            <Button size="1" variant="soft" color="red" onClick={handleLeaveWave}>
-              やめる
+            <Button size="2" variant="soft" color="red" onClick={handleLeaveWave}>
+              一旦出る
             </Button>
           </Flex>
         </Box>
@@ -174,37 +224,39 @@ export default function Viewer() {
       {/* エラー表示 */}
       {session.error && (
         <Box className={css({ backgroundColor: "rgba(239,68,68,0.2)", borderBottom: "1px solid rgba(239,68,68,0.4)", padding: "8px 16px", animation: "slideDown 0.2s ease-out" })}>
-          <Text size="2" color="red">{session.error}</Text>
+          <Text size="3" color="red">{session.error}</Text>
         </Box>
       )}
 
       {/* メインエリア */}
-      <Flex direction="column" className={css({ flex: 1, padding: "16px", gap: "12px", overflow: "auto" })}>
+      <Flex direction="column" className={css({ flex: 1, minHeight: 0, padding: "16px", gap: "12px", overflow: "auto" })}>
         {isKicked ? (
           <Box className={css({ textAlign: "center", padding: "32px 16px", flex: 1, display: "flex", alignItems: "center", justifyContent: "center" })}>
             <Text size="3" color="red">管理者によって退出されました</Text>
           </Box>
         ) : (
           <>
-            {/* コメント入力 */}
-            <Flex direction="column" gap="2">
-              <TextArea
-                ref={textareaRef}
-                placeholder="コメントを入力..."
-                value={text}
-                onChange={(e) => { if (e.target.value.length <= MAX_CHARS) setText(e.target.value); }}
-                onKeyDown={handleKeyDown}
-                rows={2}
-                className={css({ fontSize: "16px !important", resize: "none" })}
-              />
-              <Flex justify="between" align="center">
-                <Text size="1" color="gray">{text.length}/{MAX_CHARS}</Text>
-                <Button size="2" disabled={!text.trim() || sending} onClick={handleSend}>
-                  <PaperPlaneIcon />
-                  送信
-                </Button>
+            {/* コメント入力（ウェーブ参加中は非表示） */}
+            {!waveJoined && (
+              <Flex direction="column" gap="2">
+                <TextArea
+                  ref={textareaRef}
+                  placeholder="コメントを入力..."
+                  value={text}
+                  onChange={(e) => { if (e.target.value.length <= MAX_CHARS) setText(e.target.value); }}
+                  onKeyDown={handleKeyDown}
+                  rows={2}
+                  className={css({ fontSize: "18px !important", resize: "none" })}
+                />
+                <Flex justify="between" align="center">
+                  <Text size="2" color="gray">{text.length}/{MAX_CHARS}</Text>
+                  <Button size="3" disabled={!text.trim() || sending} onClick={handleSend}>
+                    <PaperPlaneIcon />
+                    送信
+                  </Button>
+                </Flex>
               </Flex>
-            </Flex>
+            )}
 
             {/* 送信済みコメント一覧 */}
             {localComments.length > 0 && (
@@ -253,7 +305,7 @@ export default function Viewer() {
                   onValueChange={(v) => {
                     const newType = Number(v);
                     setWaveType(newType);
-                    if (waveJoined) session.joinWave(newType);
+                    if (waveJoined) joinWave(newType);
                   }}
                 >
                   <Select.Trigger />
@@ -266,12 +318,6 @@ export default function Viewer() {
                   </Select.Content>
                 </Select.Root>
               </Flex>
-              {/* ウェーブ離脱 */}
-              {waveJoined && (
-                <Button variant="soft" color="red" onClick={() => { handleLeaveWave(); setMenuOpen(false); }}>
-                  ウェーブを抜ける
-                </Button>
-              )}
             </Flex>
             <Flex justify="end" mt="3">
               <Dialog.Close>

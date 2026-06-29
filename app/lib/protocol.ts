@@ -14,6 +14,14 @@ export type WaveInfo = {
   waveType: number;
   period: number;
   count: number;
+  idle: boolean;
+};
+
+export type WaveUserData = {
+  userId: string;
+  waveType: number;
+  period: number;
+  color: string;
 };
 
 export const WAVE_PATTERNS = [
@@ -21,6 +29,19 @@ export const WAVE_PATTERNS = [
   "▁▂▃▅▆▇▇▆▅▃▂▁",
   "➫➙➬➭➫➙➬➮➪",
   "↗⁀↘‿↗⁀↘‿",
+];
+
+export const NEON_COLORS = [
+  "#FF00FF",
+  "#00FFFF",
+  "#39FF14",
+  "#FF6600",
+  "#FF0099",
+  "#FFFF00",
+  "#00FF99",
+  "#FF3366",
+  "#9933FF",
+  "#00CCFF",
 ];
 
 export type SessionState = {
@@ -32,6 +53,9 @@ export type SessionState = {
   kickedUserIds: string[];
   waveEnabled: boolean;
   waveData: WaveInfo[];
+  waveUsers: WaveUserData[];
+  qrVisible: boolean;
+  qrSvg: string | null;
 };
 
 export type ClientMessage =
@@ -42,9 +66,11 @@ export type ClientMessage =
   | { type: "admin:clear-notify" }
   | { type: "admin:bg-color"; color: string }
   | { type: "admin:wave-toggle"; enabled: boolean }
+  | { type: "admin:qr-toggle"; visible: boolean; qrSvg?: string }
   | { type: "wave:join"; waveType: number }
   | { type: "wave:leave" }
-  | { type: "wave:period"; seconds: number; waveType: number };
+  | { type: "wave:period"; seconds: number; waveType: number }
+  | { type: "wave:idle" };
 
 export type ServerMessage =
   | { type: "sync"; state: SessionState }
@@ -56,7 +82,8 @@ export type ServerMessage =
   | { type: "notify:clear" }
   | { type: "bg-color"; color: string }
   | { type: "wave:status"; enabled: boolean }
-  | { type: "wave:data"; waves: WaveInfo[] }
+  | { type: "wave:data"; waves: WaveInfo[]; users: WaveUserData[] }
+  | { type: "qr-visible"; visible: boolean; qrSvg?: string }
   | { type: "error"; message: string };
 
 export function encodeMessage(msg: ClientMessage | ServerMessage): string {

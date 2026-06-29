@@ -15,13 +15,21 @@ type ConnectionMeta = {
 type WaveParticipant = {
   waveType: number;
   period: number;
+  color: string;
+  idle: boolean;
 };
 
 type WaveInfo = {
   waveType: number;
   period: number;
   count: number;
+  idle: boolean;
 };
+
+const NEON_COLORS = [
+  "#FF00FF", "#00FFFF", "#39FF14", "#FF6600", "#FF0099",
+  "#FFFF00", "#00FF99", "#FF3366", "#9933FF", "#00CCFF",
+];
 
 const MAX_COMMENTS = 500;
 const RATE_LIMIT_MS = 500;
@@ -44,6 +52,9 @@ export default class SessionServer implements Party.Server {
   waveParticipants = new Map<string, WaveParticipant>();
   lastWaveBroadcast = 0;
   waveBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  qrVisible = false;
+  qrSvg: string | null = null;
 
   constructor(readonly room: Party.Room) {}
 
@@ -86,6 +97,9 @@ export default class SessionServer implements Party.Server {
           kickedUserIds: [...this.kickedUserIds],
           waveEnabled: this.waveEnabled,
           waveData: this.aggregateWaveData(),
+          waveUsers: this.getWaveUsers(),
+          qrVisible: this.qrVisible,
+          qrSvg: this.qrSvg,
         },
       }),
     );
@@ -124,6 +138,9 @@ export default class SessionServer implements Party.Server {
       case "admin:wave-toggle":
         if (this.isAdmin(sender)) this.handleWaveToggle(msg.enabled as boolean);
         break;
+      case "admin:qr-toggle":
+        if (this.isAdmin(sender)) this.handleQrToggle(msg.visible as boolean, msg.qrSvg as string | undefined);
+        break;
       case "wave:join":
         this.handleWaveJoin(meta.userId, msg.waveType as number);
         break;
@@ -132,6 +149,9 @@ export default class SessionServer implements Party.Server {
         break;
       case "wave:period":
         this.handleWavePeriod(meta.userId, msg.seconds as number, msg.waveType as number);
+        break;
+      case "wave:idle":
+        this.handleWaveIdle(meta.userId);
         break;
     }
   }
@@ -225,6 +245,12 @@ export default class SessionServer implements Party.Server {
     this.broadcast(JSON.stringify({ type: "bg-color", color }));
   }
 
+  private handleQrToggle(visible: boolean, qrSvg?: string) {
+    this.qrVisible = visible;
+    this.qrSvg = visible && qrSvg ? qrSvg : null;
+    this.broadcast(JSON.stringify({ type: "qr-visible", visible, qrSvg: this.qrSvg }));
+  }
+
   private handleWaveToggle(enabled: boolean) {
     this.waveEnabled = enabled;
     if (!enabled) {
@@ -236,7 +262,9 @@ export default class SessionServer implements Party.Server {
 
   private handleWaveJoin(userId: string, waveType: number) {
     if (!this.waveEnabled) return;
-    this.waveParticipants.set(userId, { waveType, period: 1 });
+    const existing = this.waveParticipants.get(userId);
+    const color = existing?.color || NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
+    this.waveParticipants.set(userId, { waveType, period: 2, color, idle: false });
     this.scheduleWaveBroadcast();
   }
 
@@ -248,23 +276,34 @@ export default class SessionServer implements Party.Server {
   private handleWavePeriod(userId: string, seconds: number, waveType: number) {
     if (!this.waveEnabled) return;
     const clamped = Math.max(0.3, Math.min(5, seconds));
-    this.waveParticipants.set(userId, { waveType, period: clamped });
+    const existing = this.waveParticipants.get(userId);
+    const color = existing?.color || NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
+    this.waveParticipants.set(userId, { waveType, period: clamped, color, idle: false });
     this.scheduleWaveBroadcast();
   }
 
+  private handleWaveIdle(userId: string) {
+    const p = this.waveParticipants.get(userId);
+    if (p && !p.idle) {
+      p.idle = true;
+      this.scheduleWaveBroadcast();
+    }
+  }
+
   private aggregateWaveData(): WaveInfo[] {
-    const groups = new Map<number, number[]>();
+    const groups = new Map<number, { periods: number[]; idleCount: number }>();
     for (const p of this.waveParticipants.values()) {
-      const arr = groups.get(p.waveType) || [];
-      arr.push(p.period);
-      groups.set(p.waveType, arr);
+      let g = groups.get(p.waveType);
+      if (!g) { g = { periods: [], idleCount: 0 }; groups.set(p.waveType, g); }
+      g.periods.push(p.period);
+      if (p.idle) g.idleCount++;
     }
 
     const result: WaveInfo[] = [];
-    for (const [waveType, periods] of groups) {
-      periods.sort((a, b) => a - b);
-      const median = periods[Math.floor(periods.length / 2)];
-      result.push({ waveType, period: median, count: periods.length });
+    for (const [waveType, g] of groups) {
+      g.periods.sort((a, b) => a - b);
+      const median = g.periods[Math.floor(g.periods.length / 2)];
+      result.push({ waveType, period: median, count: g.periods.length, idle: g.idleCount === g.periods.length });
     }
     return result;
   }
@@ -281,10 +320,19 @@ export default class SessionServer implements Party.Server {
     }, delay);
   }
 
+  private getWaveUsers() {
+    const result: { userId: string; waveType: number; period: number; color: string }[] = [];
+    for (const [userId, p] of this.waveParticipants) {
+      result.push({ userId, waveType: p.waveType, period: p.period, color: p.color });
+    }
+    return result;
+  }
+
   private broadcastWaveData() {
     this.lastWaveBroadcast = Date.now();
     const waves = this.aggregateWaveData();
-    this.broadcast(JSON.stringify({ type: "wave:data", waves }));
+    const users = this.getWaveUsers();
+    this.broadcast(JSON.stringify({ type: "wave:data", waves, users }));
   }
 
   private broadcastViewerCount() {

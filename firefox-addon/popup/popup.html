@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Adhoc Nico</h1>
+    <div class="status" id="status">
+      <span class="dot" id="dot"></span>
+      <span id="status-text">未接続</span>
+    </div>
+    <div class="field">
+      <label for="host">サーバー</label>
+      <input type="text" id="host" placeholder="adhocnico.uebit.net">
+    </div>
+    <div class="field">
+      <label for="session-id">セッションID</label>
+      <input type="text" id="session-id" placeholder="セッションIDを貼り付け">
+    </div>
+    <div class="actions">
+      <button id="connect-btn" class="btn primary">接続</button>
+      <button id="disconnect-btn" class="btn danger" disabled>切断</button>
+    </div>
+    <div class="tab-section" id="tab-section" style="display:none">
+      <button id="tab-toggle-btn" class="btn tab-toggle">このタブで有効にする</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

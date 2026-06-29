@@ -4,8 +4,19 @@ html,
 body {
   margin: 0;
   padding: 0;
+  height: 100dvh;
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
     Meiryo, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.radix-themes {
+  height: 100%;
+  --accent-9: #f33968;
+  --accent-10: #e0305c;
+  --accent-11: #ff6b8a;
+  --accent-a3: rgba(243, 57, 104, 0.15);
+  --accent-a4: rgba(243, 57, 104, 0.22);
+  --accent-a5: rgba(243, 57, 104, 0.3);
 }

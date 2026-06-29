@@ -14,7 +14,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        <Theme appearance="dark" accentColor="violet" radius="medium">
+        <Theme appearance="dark" accentColor="crimson" radius="medium">
           {children}
         </Theme>
         <ScrollRestoration />
@@ -31,16 +31,25 @@ export default function App() {
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = "エラー";
   let details = "予期しないエラーが発生しました。";
+  let stack = "";
 
   if (isRouteErrorResponse(error)) {
     message = error.status === 404 ? "404" : "エラー";
     details = error.status === 404 ? "ページが見つかりません。" : error.statusText || details;
+  } else if (error instanceof Error) {
+    details = error.message;
+    stack = error.stack || "";
   }
 
   return (
     <main style={{ padding: "4rem 1rem", maxWidth: 600, margin: "0 auto", color: "#fff" }}>
       <h1>{message}</h1>
       <p>{details}</p>
+      {stack && (
+        <pre style={{ fontSize: "11px", overflow: "auto", whiteSpace: "pre-wrap", color: "#aaa", marginTop: "1rem" }}>
+          {stack}
+        </pre>
+      )}
     </main>
   );
 }

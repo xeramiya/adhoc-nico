@@ -1,9 +1,15 @@
 import { useReducer, useCallback, useRef, useEffect, useState } from "react";
 import usePartySocket from "partysocket/react";
-import type { Comment, ServerMessage, ViewerCount, WaveInfo } from "./protocol";
+import type { Comment, ServerMessage, ViewerCount, WaveInfo, WaveUserData } from "./protocol";
 import { encodeMessage } from "./protocol";
 
-const PARTY_HOST = typeof window !== "undefined" && window.location.hostname === "localhost" ? "localhost:1999" : "";
+const isDev = typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
+
+const PARTY_HOST = isDev
+  ? window.location.host
+  : (import.meta.env.VITE_PARTY_HOST || (typeof window !== "undefined" ? window.location.host : ""));
+const PARTY_PROTOCOL = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : undefined;
 
 type SessionClientState = {
   comments: Comment[];
@@ -15,6 +21,9 @@ type SessionClientState = {
   synced: boolean;
   waveEnabled: boolean;
   waveData: WaveInfo[];
+  waveUsers: WaveUserData[];
+  qrVisible: boolean;
+  qrSvg: string | null;
 };
 
 const initialState: SessionClientState = {
@@ -27,6 +36,9 @@ const initialState: SessionClientState = {
   synced: false,
   waveEnabled: false,
   waveData: [],
+  waveUsers: [],
+  qrVisible: false,
+  qrSvg: null,
 };
 
 function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionClientState {
@@ -48,9 +60,11 @@ function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionC
     case "user:kicked":
       return { ...state, kickedUserIds: [...state.kickedUserIds, msg.userId] };
     case "wave:status":
-      return { ...state, waveEnabled: msg.enabled, waveData: msg.enabled ? state.waveData : [] };
+      return { ...state, waveEnabled: msg.enabled, waveData: msg.enabled ? state.waveData : [], waveUsers: msg.enabled ? state.waveUsers : [] };
     case "wave:data":
-      return { ...state, waveData: msg.waves };
+      return { ...state, waveData: msg.waves, waveUsers: msg.users };
+    case "qr-visible":
+      return { ...state, qrVisible: msg.visible, qrSvg: msg.visible ? (msg.qrSvg ?? null) : null };
     case "error":
       return state;
     default:
@@ -72,6 +86,7 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
 
   const socket = usePartySocket({
     host: PARTY_HOST,
+    protocol: PARTY_PROTOCOL,
     room: sessionId,
     party: "session",
     query: query.current,
@@ -125,6 +140,11 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     [socket],
   );
 
+  const toggleQr = useCallback(
+    (visible: boolean, qrSvg?: string) => socket.send(encodeMessage({ type: "admin:qr-toggle", visible, qrSvg })),
+    [socket],
+  );
+
   const joinWave = useCallback(
     (waveType: number) => socket.send(encodeMessage({ type: "wave:join", waveType })),
     [socket],
@@ -140,6 +160,11 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     [socket],
   );
 
+  const sendWaveIdle = useCallback(
+    () => socket.send(encodeMessage({ type: "wave:idle" })),
+    [socket],
+  );
+
   return {
     ...state,
     error,
@@ -150,9 +175,11 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     clearNotify,
     setBgColor,
     toggleWave,
+    toggleQr,
     joinWave,
     leaveWave,
     sendWavePeriod,
+    sendWaveIdle,
     connectionStatus: socket.readyState,
   };
 }
