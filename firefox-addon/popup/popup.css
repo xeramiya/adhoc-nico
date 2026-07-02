@@ -68,10 +68,16 @@ h1 {
   font-size: 13px;
   outline: none;
   font-family: monospace;
+  width: 100%;
 }
 
 .field input:focus {
   border-color: #f33968;
+}
+
+.field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .actions {
@@ -95,29 +101,6 @@ h1 {
   cursor: not-allowed;
 }
 
-.btn.primary {
-  background: #f33968;
-  color: white;
-}
-
-.btn.primary:hover:not(:disabled) {
-  opacity: 0.85;
-}
-
-.btn.danger {
-  background: #45475a;
-  color: #f38ba8;
-}
-
-.btn.danger:hover:not(:disabled) {
-  background: #585b70;
-}
-
-.tab-section {
-  border-top: 1px solid #45475a;
-  padding-top: 12px;
-}
-
 .btn.tab-toggle {
   background: #313244;
   color: #cdd6f4;
@@ -134,4 +117,18 @@ h1 {
 
 .btn.tab-toggle.active:hover:not(:disabled) {
   opacity: 0.85;
+}
+
+.btn.reset {
+  flex: none;
+  width: 36px;
+  padding: 8px;
+  background: #45475a;
+  color: #cdd6f4;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.btn.reset:hover:not(:disabled) {
+  background: #585b70;
 }

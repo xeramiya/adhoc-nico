@@ -1,16 +1,16 @@
-import { useState } from "react";
-import { useParams, useSearchParams } from "react-router";
-import { flushSync } from "react-dom";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
+import { useParams, useLocation, useBlocker } from "react-router";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
-import { formatTime } from "~/lib/utils";
+import { formatTime, parseColorCommand, getUserId, getAudienceUrl, getStoredAdminToken, storeAdminToken } from "~/lib/utils";
+import { ENDING_GRACE_MS } from "~/lib/protocol";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Button,
   Dialog,
   TextArea,
-  ScrollArea,
   Badge,
   IconButton,
   Flex,
@@ -28,11 +28,15 @@ import {
   ActivityLogIcon,
   CopyIcon,
   CheckIcon,
+  Link2Icon,
+  LockClosedIcon,
+  ExitIcon,
 } from "@radix-ui/react-icons";
 
 const PRESET_COLORS = ["#000000", "#252525", "#1a1a3e", "#1a3e1a"];
 const MAX_DISPLAY_COMMENTS = 200;
 
+// アドオンのオーバーレイに中継するQRコードをSVG文字列として生成する
 function generateQrSvg(url: string): string {
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -46,50 +50,150 @@ function generateQrSvg(url: string): string {
   return svg;
 }
 
+// msミリ秒だけtrueになるフィードバック用フラグ
+function useTimedFlag(ms: number): [boolean, () => void] {
+  const [flag, setFlag] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+  const trigger = useCallback(() => {
+    setFlag(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setFlag(false), ms);
+  }, [ms]);
+  return [flag, trigger];
+}
+
 export default function Admin() {
   const { sessionId } = useParams();
-  const [searchParams] = useSearchParams();
-  const sessionName = searchParams.get("name") || "";
-  const session = useSession(sessionId!, "admin", "admin", sessionName);
+
+  const [adminToken] = useState(() => {
+    // 共有リンクで開いた場合はURLのトークンを優先し、古い保存値を上書きする
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get("token");
+    if (urlToken) {
+      storeAdminToken(sessionId!, urlToken);
+      window.history.replaceState({}, "", `/${sessionId}/admin`);
+      return urlToken;
+    }
+    return getStoredAdminToken(sessionId!) || "";
+  });
+
+  if (!adminToken) {
+    return (
+      <Flex align="center" justify="center" className={css({ height: "100vh", backgroundColor: "#1e1e2e" })}>
+        <Card>
+          <Flex direction="column" align="center" gap="3" p="4">
+            <Text size="4" weight="bold">管理者トークンがありません</Text>
+            <Text size="2" color="gray">このセッションの管理者権限がないか、別のブラウザで作成されたセッションです。</Text>
+          </Flex>
+        </Card>
+      </Flex>
+    );
+  }
+
+  return <AdminSession sessionId={sessionId!} adminToken={adminToken} />;
+}
+
+function AdminSession({ sessionId, adminToken }: { sessionId: string; adminToken: string }) {
+  const location = useLocation();
+  const initialName = (location.state as { name?: string })?.name || "";
+  const [userId] = useState(() => getUserId());
+  const session = useSession(sessionId, "admin", userId, initialName, adminToken);
 
   const [notifyText, setNotifyText] = useState("");
   const [qrOpen, setQrOpen] = useState(false);
   const [kickTarget, setKickTarget] = useState<string | null>(null);
-  const [idCopied, setIdCopied] = useState(false);
+  const [idCopied, flashIdCopied] = useTimedFlag(2000);
+  const [addonSynced, flashAddonSynced] = useTimedFlag(2000);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareCopied, flashShareCopied] = useTimedFlag(2000);
+  const [endOpen, setEndOpen] = useState(false);
+  const [endedDialogOpen, setEndedDialogOpen] = useState(false);
+
+  const isLastAdmin = session.adminCount <= 1;
+
+  useEffect(() => {
+    if (session.ended) {
+      setEndOpen(false);
+      setEndedDialogOpen(true);
+    }
+  }, [session.ended]);
+
+  useEffect(() => {
+    if (session.ended || !isLastAdmin) return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isLastAdmin, session.ended]);
+
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      !session.ended && isLastAdmin && currentLocation.pathname !== nextLocation.pathname,
+  );
 
   const isConnected = session.connectionStatus === WebSocket.OPEN;
-  const isLocal = typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
-  const audienceUrl =
-    typeof window !== "undefined"
-      ? isLocal
-        ? `${window.location.protocol}//${__DEV_LAN_IP__}:${window.location.port}/${sessionId}`
-        : `${window.location.origin}/${sessionId}`
-      : "";
+  const audienceUrl = getAudienceUrl(sessionId!);
+  const shareUrl = `${window.location.origin}/${sessionId}/admin?token=${adminToken}`;
+  const endedStyle = session.ended ? { opacity: 0.4, pointerEvents: "none" as const } : undefined;
 
   const reversedComments = [...session.comments].reverse().slice(0, MAX_DISPLAY_COMMENTS);
 
   return (
     <Box className={css({ height: "100vh", overflow: "hidden", backgroundColor: "#1e1e2e" })}>
-    <Box p="4" className={css({ maxWidth: "1200px", margin: "0 auto", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" })}>
+    <Flex direction="column" p="4" className={css({ maxWidth: "1200px", margin: "0 auto", height: "100vh", overflow: "hidden" })}>
       {/* トップバー */}
       <Card mb="3">
         <Flex align="center" justify="between" wrap="wrap" gap="3">
           <Flex align="center" gap="3">
             <Box
               className={css({
+                position: "relative",
                 width: "10px",
                 height: "10px",
-                borderRadius: "50%",
-                backgroundColor: isConnected ? "#22c55e" : "#ef4444",
                 flexShrink: 0,
               })}
-            />
+            >
+              <Box
+                className={css({
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: "50%",
+                  backgroundColor: session.ended ? "#6b7280" : isConnected ? "#22c55e" : "#ef4444",
+                })}
+              />
+              {isConnected && !session.ended && (
+                <>
+                  <Box
+                    className={css({
+                      position: "absolute",
+                      inset: 0,
+                      borderRadius: "50%",
+                      backgroundColor: "#22c55e",
+                      animation: "ripple 2.4s ease-out infinite",
+                    })}
+                  />
+                  <Box
+                    className={css({
+                      position: "absolute",
+                      inset: 0,
+                      borderRadius: "50%",
+                      backgroundColor: "#22c55e",
+                      animation: "ripple 2.4s ease-out 1.2s infinite",
+                    })}
+                  />
+                </>
+              )}
+            </Box>
             <Text size="4" weight="bold">
               {session.sessionName || sessionId}
             </Text>
+            {session.ended && (
+              <Badge size="2" color="red" variant="solid">終了済み</Badge>
+            )}
           </Flex>
-          <Flex gap="2" wrap="wrap">
+          <Flex gap="2" wrap="wrap" style={endedStyle}>
             <Button
               variant="soft"
               onClick={() => window.open(`/${sessionId}/screen`, "_blank")}
@@ -108,12 +212,36 @@ export default function Admin() {
                 if (session.qrVisible) {
                   session.toggleQr(false);
                 } else {
-                  const svg = generateQrSvg(audienceUrl);
-                  session.toggleQr(true, svg);
+                  // アドオンのオーバーレイはQRを自前生成できないため、SVGを添えて中継してもらう
+                  session.toggleQr(true, generateQrSvg(audienceUrl));
                 }
               }}
             >
               画面にQR{session.qrVisible ? "ON" : "OFF"}
+            </Button>
+            <Button variant="soft" onClick={() => setShareOpen(true)}>
+              <LockClosedIcon />
+              管理URLを共有
+            </Button>
+            <Button variant="soft" color="red" onClick={() => setEndOpen(true)}>
+              <ExitIcon />
+              セッション終了
+            </Button>
+            <Button
+              variant={addonSynced ? "solid" : "soft"}
+              color={addonSynced ? "green" : undefined}
+              onClick={() => {
+                window.postMessage({
+                  type: "adhoc-nico:sync",
+                  sessionId,
+                  sessionName: session.sessionName || initialName || "",
+                }, "*");
+                flashAddonSynced();
+              }}
+              title="ブラウザアドオンにセッション情報を送信します"
+            >
+              <Link2Icon />
+              {addonSynced ? "送信しました" : "オーバーレイ連携"}
             </Button>
           </Flex>
         </Flex>
@@ -135,18 +263,28 @@ export default function Admin() {
 
       <Flex gap="3" className={css({ flex: 1, minHeight: 0, flexDirection: { base: "column", lg: "row" } })}>
         {/* コメント一覧 */}
-        <Box className={css({ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" })}>
+        <Flex direction="column" className={css({ flex: 1, minHeight: 0 })}>
           <Text size="2" weight="bold" mb="2">
             コメント ({session.comments.length})
           </Text>
-          <Card className={css({ flex: 1, minHeight: 0 })}>
-            <ScrollArea className={css({ height: "100%" })}>
+          <Box
+            className={css({
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              borderRadius: "var(--radius-4)",
+              backgroundColor: "var(--color-panel-translucent)",
+              boxShadow: "inset 0 0 0 1px var(--gray-a5)",
+            })}
+          >
               {reversedComments.length === 0 ? (
-                <Text size="2" color="gray" className={css({ padding: "16px", textAlign: "center" })}>
-                  コメントはまだありません
-                </Text>
+                <Flex align="center" justify="center" className={css({ height: "100%", padding: "16px" })}>
+                  <Text size="2" color="gray" className={css({ textAlign: "center" })}>
+                    コメントはまだありません
+                  </Text>
+                </Flex>
               ) : (
-                <Flex direction="column" gap="1">
+                <Flex direction="column" gap="1" className={css({ padding: "8px" })}>
                   {reversedComments.map((c) => (
                     <Flex
                       key={c.id}
@@ -166,38 +304,39 @@ export default function Admin() {
                         {c.userId.slice(0, 6)}
                       </Badge>
                       <Text size="2" className={css({ flex: 1, wordBreak: "break-all" })}>
-                        {c.text}
+                        {parseColorCommand(c.text).body}
                       </Text>
-                      <Flex gap="1" className={css({ flexShrink: 0 })}>
-                        <IconButton
-                          size="1"
-                          variant="ghost"
-                          color="red"
-                          onClick={() => session.deleteComment(c.id)}
-                          title="削除"
-                        >
-                          <TrashIcon />
-                        </IconButton>
-                        <IconButton
-                          size="1"
-                          variant="ghost"
-                          color="orange"
-                          onClick={() => setKickTarget(c.userId)}
-                          title="キック"
-                        >
-                          <CrossCircledIcon />
-                        </IconButton>
-                      </Flex>
+                      {!session.ended && (
+                        <Flex gap="1" className={css({ flexShrink: 0 })}>
+                          <IconButton
+                            size="1"
+                            variant="ghost"
+                            color="red"
+                            onClick={() => session.deleteComment(c.id)}
+                            title="削除"
+                          >
+                            <TrashIcon />
+                          </IconButton>
+                          <IconButton
+                            size="1"
+                            variant="ghost"
+                            color="orange"
+                            onClick={() => setKickTarget(c.userId)}
+                            title="キック"
+                          >
+                            <CrossCircledIcon />
+                          </IconButton>
+                        </Flex>
+                      )}
                     </Flex>
                   ))}
                 </Flex>
               )}
-            </ScrollArea>
-          </Card>
-        </Box>
+          </Box>
+        </Flex>
 
         {/* サイドパネル */}
-        <Box className={css({ width: { base: "100%", lg: "320px" }, flexShrink: 0, display: "flex", flexDirection: "column", gap: "12px", overflow: "auto" })}>
+        <Flex direction="column" className={css({ width: { base: "100%", lg: "320px" }, flexShrink: 0, gap: "12px", overflow: "auto" })} style={endedStyle}>
           {/* 通知パネル */}
           <Card>
             <Flex direction="column" gap="2">
@@ -310,7 +449,7 @@ export default function Admin() {
               </Flex>
             </Flex>
           </Card>
-        </Box>
+        </Flex>
       </Flex>
 
       {/* QRコードダイアログ */}
@@ -337,8 +476,7 @@ export default function Admin() {
               variant="ghost"
               onClick={() => {
                 navigator.clipboard.writeText(sessionId!);
-                setIdCopied(true);
-                setTimeout(() => setIdCopied(false), 2000);
+                flashIdCopied();
               }}
               title="IDをコピー"
             >
@@ -349,6 +487,91 @@ export default function Admin() {
             <Dialog.Close>
               <Button variant="soft" color="gray">閉じる</Button>
             </Dialog.Close>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* 管理URL共有ダイアログ */}
+      <Dialog.Root open={shareOpen} onOpenChange={setShareOpen}>
+        <Dialog.Content maxWidth="480px">
+          <Dialog.Title>管理URLを共有</Dialog.Title>
+          <Dialog.Description size="2" color="orange" mb="3">
+            このリンクには管理者トークンが含まれます。共有先にはセッションの全操作権限が付与されます。
+          </Dialog.Description>
+          <Card variant="surface">
+            <Text
+              size="2"
+              className={css({ fontFamily: "monospace", wordBreak: "break-all", userSelect: "all" })}
+            >
+              {shareUrl}
+            </Text>
+          </Card>
+          <Flex gap="3" mt="4" justify="end">
+            <Dialog.Close>
+              <Button variant="soft" color="gray">閉じる</Button>
+            </Dialog.Close>
+            <Button
+              variant={shareCopied ? "solid" : "outline"}
+              color={shareCopied ? "green" : undefined}
+              onClick={() => {
+                navigator.clipboard.writeText(shareUrl);
+                flashShareCopied();
+              }}
+            >
+              {shareCopied ? <CheckIcon /> : <CopyIcon />}
+              {shareCopied ? "コピーしました" : "コピー"}
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* セッション終了確認ダイアログ */}
+      <Dialog.Root open={endOpen} onOpenChange={setEndOpen}>
+        <Dialog.Content maxWidth="400px">
+          <Dialog.Title>セッションを終了</Dialog.Title>
+          <Dialog.Description size="2">
+            セッションを終了すると、すべての観客とスクリーンが切断されます。この操作は取り消せません。
+          </Dialog.Description>
+          <Flex gap="3" mt="4" justify="end">
+            <Dialog.Close>
+              <Button variant="soft" color="gray">キャンセル</Button>
+            </Dialog.Close>
+            <Button color="red" onClick={() => session.endSession()}>
+              終了する
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* セッション終了完了ダイアログ */}
+      <Dialog.Root open={endedDialogOpen} onOpenChange={setEndedDialogOpen}>
+        <Dialog.Content maxWidth="400px">
+          <Dialog.Title>セッションが終了しました</Dialog.Title>
+          <Dialog.Description size="2">
+            すべての観客とスクリーンが切断されました。コメント履歴はこのページで引き続き確認できます。
+          </Dialog.Description>
+          <Flex justify="end" mt="4">
+            <Dialog.Close>
+              <Button variant="soft">閉じる</Button>
+            </Dialog.Close>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      {/* ナビゲーション確認ダイアログ */}
+      <Dialog.Root open={blocker.state === "blocked"} onOpenChange={(open) => !open && blocker.reset?.()}>
+        <Dialog.Content maxWidth="400px">
+          <Dialog.Title>ページを離れますか？</Dialog.Title>
+          <Dialog.Description size="2">
+            最後の管理者です。ページを離れるとセッションは{ENDING_GRACE_MS / 60_000}分後に自動終了します。
+          </Dialog.Description>
+          <Flex gap="3" mt="4" justify="end">
+            <Button variant="soft" color="gray" onClick={() => blocker.reset?.()}>
+              キャンセル
+            </Button>
+            <Button color="red" onClick={() => blocker.proceed?.()}>
+              離れる
+            </Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -378,7 +601,7 @@ export default function Admin() {
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
-    </Box>
+    </Flex>
     </Box>
   );
 }

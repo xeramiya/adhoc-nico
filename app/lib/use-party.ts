@@ -1,15 +1,18 @@
-import { useReducer, useCallback, useRef, useEffect, useState } from "react";
+import { useReducer, useCallback, useRef, useState } from "react";
 import usePartySocket from "partysocket/react";
-import type { Comment, ServerMessage, ViewerCount, WaveInfo, WaveUserData } from "./protocol";
+import type { Comment, ServerMessage, ViewerCount, WaveInfo } from "./protocol";
 import { encodeMessage } from "./protocol";
+import { isLocalHostname } from "./utils";
 
-const isDev = typeof window !== "undefined" &&
-  (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
+const isDev = typeof window !== "undefined" && isLocalHostname(window.location.hostname);
 
 const PARTY_HOST = isDev
   ? window.location.host
   : (import.meta.env.VITE_PARTY_HOST || (typeof window !== "undefined" ? window.location.host : ""));
 const PARTY_PROTOCOL = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : undefined;
+
+// サーバー側のMAX_COMMENTSと同じ上限。ライブ中の無制限な成長を防ぐ
+const MAX_CLIENT_COMMENTS = 500;
 
 type SessionClientState = {
   comments: Comment[];
@@ -21,9 +24,11 @@ type SessionClientState = {
   synced: boolean;
   waveEnabled: boolean;
   waveData: WaveInfo[];
-  waveUsers: WaveUserData[];
   qrVisible: boolean;
   qrSvg: string | null;
+  endingAt: number | null;
+  ended: boolean;
+  adminCount: number;
 };
 
 const initialState: SessionClientState = {
@@ -36,17 +41,19 @@ const initialState: SessionClientState = {
   synced: false,
   waveEnabled: false,
   waveData: [],
-  waveUsers: [],
   qrVisible: false,
   qrSvg: null,
+  endingAt: null,
+  ended: false,
+  adminCount: 0,
 };
 
 function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionClientState {
   switch (msg.type) {
     case "sync":
-      return { ...msg.state, synced: true };
+      return { ...state, ...msg.state, synced: true };
     case "comment:new":
-      return { ...state, comments: [...state.comments, msg.comment] };
+      return { ...state, comments: [...state.comments, msg.comment].slice(-MAX_CLIENT_COMMENTS) };
     case "comment:deleted":
       return { ...state, comments: state.comments.filter((c) => c.id !== msg.commentId) };
     case "viewer:count":
@@ -60,11 +67,19 @@ function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionC
     case "user:kicked":
       return { ...state, kickedUserIds: [...state.kickedUserIds, msg.userId] };
     case "wave:status":
-      return { ...state, waveEnabled: msg.enabled, waveData: msg.enabled ? state.waveData : [], waveUsers: msg.enabled ? state.waveUsers : [] };
+      return { ...state, waveEnabled: msg.enabled, waveData: msg.enabled ? state.waveData : [] };
     case "wave:data":
-      return { ...state, waveData: msg.waves, waveUsers: msg.users };
+      return { ...state, waveData: msg.waves };
     case "qr-visible":
-      return { ...state, qrVisible: msg.visible, qrSvg: msg.visible ? (msg.qrSvg ?? null) : null };
+      return { ...state, qrVisible: msg.visible, qrSvg: msg.qrSvg };
+    case "session:ended":
+      return { ...state, ended: true, endingAt: null };
+    case "session:ending":
+      return { ...state, endingAt: msg.deadline };
+    case "session:ending-cancelled":
+      return { ...state, endingAt: null };
+    case "admin:count":
+      return { ...state, adminCount: msg.count };
     case "error":
       return state;
     default:
@@ -74,7 +89,7 @@ function sessionReducer(state: SessionClientState, msg: ServerMessage): SessionC
 
 type Role = "admin" | "viewer" | "screen";
 
-export function useSession(sessionId: string, role: Role, userId: string, sessionName?: string) {
+export function useSession(sessionId: string, role: Role, userId: string, sessionName?: string, adminToken?: string) {
   const [state, dispatch] = useReducer(sessionReducer, initialState);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,6 +97,7 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     role,
     userId,
     ...(sessionName ? { sessionName } : {}),
+    ...(adminToken ? { adminToken } : {}),
   });
 
   const socket = usePartySocket({
@@ -95,9 +111,17 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
         const msg = JSON.parse(event.data) as ServerMessage;
         if (msg.type === "error") {
           setError(msg.message);
-          setTimeout(() => setError(null), 3000);
+          if (msg.fatal) {
+            socket.close();
+          } else {
+            setTimeout(() => setError(null), 3000);
+          }
         } else {
           dispatch(msg);
+          // サーバーはこの後closeする。放置するとpartysocketが無限再接続するため明示的に止める
+          if (msg.type === "session:ended" || (msg.type === "user:kicked" && role === "viewer" && msg.userId === userId)) {
+            socket.close();
+          }
         }
       } catch {
         // ignore
@@ -145,6 +169,11 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     [socket],
   );
 
+  const endSession = useCallback(
+    () => socket.send(encodeMessage({ type: "admin:end-session" })),
+    [socket],
+  );
+
   const joinWave = useCallback(
     (waveType: number) => socket.send(encodeMessage({ type: "wave:join", waveType })),
     [socket],
@@ -176,6 +205,7 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
     setBgColor,
     toggleWave,
     toggleQr,
+    endSession,
     joinWave,
     leaveWave,
     sendWavePeriod,
@@ -184,16 +214,3 @@ export function useSession(sessionId: string, role: Role, userId: string, sessio
   };
 }
 
-export function useNewComments(comments: Comment[]) {
-  const prevLength = useRef(0);
-  const [newComment, setNewComment] = useState<Comment | null>(null);
-
-  useEffect(() => {
-    if (comments.length > prevLength.current) {
-      setNewComment(comments[comments.length - 1]);
-    }
-    prevLength.current = comments.length;
-  }, [comments]);
-
-  return newComment;
-}

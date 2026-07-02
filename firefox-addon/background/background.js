@@ -1,128 +1,282 @@
 let ws = null;
 let connected = false;
-let config = { sessionId: "", host: "adhocnico.uebit.net" };
+let sessionId = null;
+let sessionName = "";
+let intentionalClose = false;
+let currentWaves = [];
+let currentQrSvg = null;
+let reconnectTimer = null;
+const popupPorts = new Set();
 const enabledTabs = new Set();
-let cachedSync = null;
 
-function getWsUrl(host, sessionId) {
-  const isLocal = host.startsWith("localhost") || /^(192|10|172)\.\d/.test(host);
-  const port = host.split(":")[1];
-  const protocol = (!isLocal || port === "3443") ? "wss" : "ws";
-  return `${protocol}://${host}/parties/session/${sessionId}?role=screen&userId=addon-overlay`;
+function updateGlobalBadge() {
+  if (connected) {
+    browser.browserAction.setBadgeText({ text: " " });
+    browser.browserAction.setBadgeBackgroundColor({ color: "#22c55e" });
+  } else {
+    browser.browserAction.setBadgeText({ text: "" });
+  }
 }
 
-function connect(sessionId, host) {
-  disconnect();
-  config = { sessionId, host };
+function setBadgeForTab(tabId, enabled) {
+  if (enabled) {
+    browser.browserAction.setBadgeText({ text: "ON", tabId });
+    browser.browserAction.setBadgeBackgroundColor({ color: "#22c55e", tabId });
+  } else {
+    browser.browserAction.setBadgeText({ text: null, tabId });
+  }
+}
 
-  const url = getWsUrl(host, sessionId);
+function notifyPopups(msg) {
+  for (const p of popupPorts) {
+    try {
+      p.postMessage(msg);
+    } catch {}
+  }
+}
+
+// 送信失敗はページ遷移中などの一時的なものがほとんどなので、タブを無効化しない。
+// タブが閉じられた場合はtabs.onRemovedで確実に掃除される。
+function sendToEnabledTabs(msg) {
+  for (const tabId of enabledTabs) {
+    browser.tabs.sendMessage(tabId, msg).catch(() => {});
+  }
+}
+
+function overlayOnMsg() {
+  return { type: "overlay:on", waves: currentWaves, qrSvg: currentQrSvg };
+}
+
+function statusMsg() {
+  return {
+    type: "status",
+    connected,
+    sessionId,
+    sessionName,
+    hasEnabledTabs: enabledTabs.size > 0,
+  };
+}
+
+// 接続確立前(CONNECTING)や再接続待ちでもクリーンアップが必要なため、connectedでは判定しない
+function hasActiveConnection() {
+  return connected || ws !== null || reconnectTimer !== null;
+}
+
+browser.runtime.onConnect.addListener((port) => {
+  if (port.name !== "popup") return;
+
+  popupPorts.add(port);
+  port.onDisconnect.addListener(() => popupPorts.delete(port));
+
+  port.onMessage.addListener((msg) => {
+    switch (msg.type) {
+      case "getStatus":
+        port.postMessage(statusMsg());
+        break;
+      case "toggleTab": {
+        const tabId = msg.tabId;
+        if (enabledTabs.has(tabId)) {
+          enabledTabs.delete(tabId);
+          browser.tabs
+            .sendMessage(tabId, { type: "overlay:off" })
+            .catch(() => {});
+          setBadgeForTab(tabId, false);
+          port.postMessage({ type: "tabState", enabled: false });
+
+          if (enabledTabs.size === 0 && hasActiveConnection()) {
+            intentionalClose = true;
+            disconnect();
+          }
+        } else {
+          enabledTabs.add(tabId);
+          setBadgeForTab(tabId, true);
+
+          if (!connected && msg.sessionId) {
+            connect(msg.sessionId);
+          } else if (connected) {
+            browser.tabs
+              .sendMessage(tabId, overlayOnMsg())
+              .catch(() => {
+                // 有効化直後の失敗はコンテンツスクリプトが動かないページ(about:等)なので戻す
+                enabledTabs.delete(tabId);
+                setBadgeForTab(tabId, false);
+              });
+          }
+
+          port.postMessage({ type: "tabState", enabled: true });
+        }
+        notifyPopups(statusMsg());
+        break;
+      }
+      case "getTabState":
+        port.postMessage({
+          type: "tabState",
+          enabled: enabledTabs.has(msg.tabId),
+        });
+        break;
+      case "reset":
+        intentionalClose = true;
+        disconnect();
+        break;
+    }
+  });
+});
+
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  switch (msg.type) {
+    case "content:init": {
+      const tabId = sender.tab?.id;
+      const isEnabled = tabId != null && enabledTabs.has(tabId);
+      sendResponse({
+        connected,
+        enabled: isEnabled,
+        waves: isEnabled ? currentWaves : [],
+        qrSvg: isEnabled ? currentQrSvg : null,
+      });
+      break;
+    }
+    case "session:sync":
+      sessionName = msg.sessionName || "";
+      browser.storage.local.set({
+        sessionId: msg.sessionId,
+        sessionName,
+      });
+      notifyPopups({
+        type: "sessionSync",
+        sessionId: msg.sessionId,
+        sessionName,
+      });
+      break;
+  }
+  return true;
+});
+
+function connect(sid) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+
+  sessionId = sid;
+  intentionalClose = false;
+  currentWaves = [];
+  currentQrSvg = null;
+
+  const protocol = isLocalAdhocHost() ? "ws" : "wss";
+  const url =
+    protocol +
+    "://" +
+    ADHOC_NICO_HOST +
+    "/parties/session/" +
+    sid +
+    "?role=screen&userId=addon-overlay";
+
   ws = new WebSocket(url);
+  let synced = false;
 
   ws.onopen = () => {
     connected = true;
-    broadcastStatus();
+    updateGlobalBadge();
+    notifyPopups(statusMsg());
   };
 
   ws.onmessage = (event) => {
+    let msg;
     try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "sync") cachedSync = msg;
-      for (const tabId of enabledTabs) {
-        browser.tabs.sendMessage(tabId, { action: "server-message", msg }).catch(() => {
-          enabledTabs.delete(tabId);
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    // 終了済みセッションへ再接続し続けないよう、syncの前でも処理する
+    if (msg.type === "session:ended") {
+      intentionalClose = true;
+      disconnect();
+      return;
+    }
+
+    if (msg.type === "sync") {
+      synced = true;
+      currentWaves = msg.state.waveData || [];
+      currentQrSvg = msg.state.qrVisible ? msg.state.qrSvg || null : null;
+      sessionName = msg.state.sessionName || "";
+      sendToEnabledTabs(overlayOnMsg());
+      notifyPopups(statusMsg());
+      return;
+    }
+
+    if (!synced) return;
+
+    switch (msg.type) {
+      case "comment:new":
+        sendToEnabledTabs({
+          type: "comment",
+          text: msg.comment.text,
+          id: msg.comment.id,
         });
-      }
-    } catch {}
+        break;
+      case "wave:data":
+        currentWaves = msg.waves || [];
+        sendToEnabledTabs({ type: "wave:data", waves: currentWaves });
+        break;
+      case "qr-visible":
+        currentQrSvg = msg.visible ? msg.qrSvg || null : null;
+        sendToEnabledTabs({ type: "qr", qrSvg: currentQrSvg });
+        break;
+    }
   };
 
   ws.onclose = () => {
     connected = false;
-    broadcastStatus();
     ws = null;
+    updateGlobalBadge();
+    notifyPopups(statusMsg());
+
+    if (!intentionalClose && sessionId) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => connect(sessionId), 3000);
+    }
   };
 
-  ws.onerror = () => {
-    connected = false;
-    broadcastStatus();
-  };
+  ws.onerror = () => {};
 }
 
 function disconnect() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  sessionId = null;
+  sessionName = "";
+  currentWaves = [];
+  currentQrSvg = null;
+
   if (ws) {
+    ws.onclose = null;
     ws.close();
     ws = null;
   }
+
   connected = false;
-  cachedSync = null;
+  updateGlobalBadge();
+
   for (const tabId of enabledTabs) {
-    browser.tabs.sendMessage(tabId, { action: "clear" }).catch(() => {});
+    browser.tabs.sendMessage(tabId, { type: "stop" }).catch(() => {});
+    setBadgeForTab(tabId, false);
   }
   enabledTabs.clear();
-  broadcastStatus();
-}
 
-function broadcastStatus(targetTabId) {
-  const msg = { action: "status", connected, config };
-  browser.runtime.sendMessage(msg).catch(() => {});
+  notifyPopups(statusMsg());
 }
-
-function updateBadge(tabId) {
-  const on = enabledTabs.has(tabId);
-  browser.browserAction.setBadgeText({ text: on ? "ON" : "", tabId });
-  browser.browserAction.setBadgeBackgroundColor({ color: "#f33968", tabId });
-}
-
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  switch (message.action) {
-    case "connect":
-      connect(message.sessionId, message.host);
-      browser.storage.local.set({ sessionId: message.sessionId, host: message.host });
-      sendResponse({ ok: true });
-      break;
-    case "disconnect":
-      disconnect();
-      sendResponse({ ok: true });
-      break;
-    case "get-status":
-      sendResponse({ connected, config, enabledTabId: message.tabId ? enabledTabs.has(message.tabId) : false });
-      break;
-    case "enable-tab": {
-      const tabId = message.tabId;
-      enabledTabs.add(tabId);
-      browser.tabs.sendMessage(tabId, { action: "enable" }).catch(() => {});
-      if (cachedSync) {
-        browser.tabs.sendMessage(tabId, { action: "server-message", msg: cachedSync }).catch(() => {});
-      }
-      updateBadge(tabId);
-      sendResponse({ ok: true });
-      break;
-    }
-    case "disable-tab": {
-      const tabId = message.tabId;
-      enabledTabs.delete(tabId);
-      browser.tabs.sendMessage(tabId, { action: "clear" }).catch(() => {});
-      updateBadge(tabId);
-      sendResponse({ ok: true });
-      break;
-    }
-  }
-});
 
 browser.tabs.onRemoved.addListener((tabId) => {
-  enabledTabs.delete(tabId);
-});
+  if (!enabledTabs.delete(tabId)) return;
 
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "complete" && enabledTabs.has(tabId)) {
-    updateBadge(tabId);
-    browser.tabs.sendMessage(tabId, { action: "enable" }).catch(() => {});
-    if (cachedSync) {
-      browser.tabs.sendMessage(tabId, { action: "server-message", msg: cachedSync }).catch(() => {});
-    }
+  if (enabledTabs.size === 0 && hasActiveConnection()) {
+    intentionalClose = true;
+    disconnect();
+  } else {
+    notifyPopups(statusMsg());
   }
-});
-
-browser.storage.local.get(["sessionId", "host"]).then((data) => {
-  if (data.host) config.host = data.host;
-  if (data.sessionId) config.sessionId = data.sessionId;
 });

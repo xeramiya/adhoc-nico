@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Dialog, Button, TextField } from "@radix-ui/themes";
 import { css } from "~/styled-system/css";
-import { generateSessionId } from "~/lib/utils";
+import { generateSessionId, generateAdminToken, storeAdminToken } from "~/lib/utils";
 
 // 背景アニメーション
 const bgStyle = css({
@@ -109,7 +109,9 @@ export default function Home() {
   const handleCreate = () => {
     if (!name.trim()) return;
     const id = generateSessionId();
-    navigate(`/${id}/admin?name=${encodeURIComponent(name.trim())}`);
+    const token = generateAdminToken();
+    storeAdminToken(id, token);
+    navigate(`/${id}/admin`, { state: { name: name.trim() } });
   };
 
   return (
@@ -147,7 +149,7 @@ export default function Home() {
       <Dialog.Root open={open} onOpenChange={setOpen}>
         <Dialog.Trigger>
           <button className={ctaBtnStyle}>
-            新規アドホック・ニコを開始する
+            はじめる
           </button>
         </Dialog.Trigger>
         <Dialog.Content maxWidth="420px">

@@ -17,13 +17,6 @@ export type WaveInfo = {
   idle: boolean;
 };
 
-export type WaveUserData = {
-  userId: string;
-  waveType: number;
-  period: number;
-  color: string;
-};
-
 export const WAVE_PATTERNS = [
   "下广卞廿十亠卉与本二上旦上二本与卉亠十廿卞广",
   "▁▂▃▅▆▇▇▆▅▃▂▁",
@@ -44,6 +37,9 @@ export const NEON_COLORS = [
   "#00CCFF",
 ];
 
+// 最後の管理者が切断してからセッションが自動終了するまでの猶予
+export const ENDING_GRACE_MS = 60_000;
+
 export type SessionState = {
   sessionName: string;
   comments: Comment[];
@@ -53,9 +49,9 @@ export type SessionState = {
   kickedUserIds: string[];
   waveEnabled: boolean;
   waveData: WaveInfo[];
-  waveUsers: WaveUserData[];
   qrVisible: boolean;
   qrSvg: string | null;
+  endingAt: number | null;
 };
 
 export type ClientMessage =
@@ -67,6 +63,7 @@ export type ClientMessage =
   | { type: "admin:bg-color"; color: string }
   | { type: "admin:wave-toggle"; enabled: boolean }
   | { type: "admin:qr-toggle"; visible: boolean; qrSvg?: string }
+  | { type: "admin:end-session" }
   | { type: "wave:join"; waveType: number }
   | { type: "wave:leave" }
   | { type: "wave:period"; seconds: number; waveType: number }
@@ -82,26 +79,16 @@ export type ServerMessage =
   | { type: "notify:clear" }
   | { type: "bg-color"; color: string }
   | { type: "wave:status"; enabled: boolean }
-  | { type: "wave:data"; waves: WaveInfo[]; users: WaveUserData[] }
-  | { type: "qr-visible"; visible: boolean; qrSvg?: string }
-  | { type: "error"; message: string };
+  | { type: "wave:data"; waves: WaveInfo[] }
+  | { type: "qr-visible"; visible: boolean; qrSvg: string | null }
+  | { type: "session:ended" }
+  | { type: "session:ending"; deadline: number }
+  | { type: "session:ending-cancelled" }
+  | { type: "admin:count"; count: number }
+  // fatal: 再接続しても解消しないエラー（認証失敗など）。クライアントは再接続を止める
+  | { type: "error"; message: string; fatal?: boolean };
 
 export function encodeMessage(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);
 }
 
-export function decodeClientMessage(data: string): ClientMessage | null {
-  try {
-    return JSON.parse(data) as ClientMessage;
-  } catch {
-    return null;
-  }
-}
-
-export function decodeServerMessage(data: string): ServerMessage | null {
-  try {
-    return JSON.parse(data) as ServerMessage;
-  } catch {
-    return null;
-  }
-}

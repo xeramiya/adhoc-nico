@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useParams } from "react-router";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
 import { useShake, requestMotionPermission, type MotionPermissionResult } from "~/lib/use-shake";
-import { getUserId, formatTime, isUrlLine } from "~/lib/utils";
+import { getUserId, formatTime, isUrlLine, parseColorCommand } from "~/lib/utils";
 import { WAVE_PATTERNS } from "~/lib/protocol";
 import { MarqueeText } from "~/components/marquee-text";
 import {
+  Badge,
   Button,
   Dialog,
   TextArea,
@@ -17,28 +18,10 @@ import {
   Select,
 } from "@radix-ui/themes";
 import { PaperPlaneIcon, DotsHorizontalIcon } from "@radix-ui/react-icons";
+import { AnimatePresence, motion } from "motion/react";
 
 const MAX_CHARS = 200;
-const COLLAPSED_COUNT = 3;
-const MAX_HISTORY = 20;
-
-type LocalComment = { text: string; timestamp: number };
-
-function loadComments(sessionId: string): LocalComment[] {
-  try {
-    const raw = localStorage.getItem(`adhoc-nico-comments-${sessionId}`);
-    return raw ? (JSON.parse(raw) as LocalComment[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveComment(sessionId: string, comment: LocalComment) {
-  const list = loadComments(sessionId);
-  list.push(comment);
-  const trimmed = list.slice(-MAX_HISTORY);
-  localStorage.setItem(`adhoc-nico-comments-${sessionId}`, JSON.stringify(trimmed));
-}
+const MAX_DISPLAY_COMMENTS = 100;
 
 export default function Viewer() {
   const { sessionId } = useParams();
@@ -47,22 +30,31 @@ export default function Viewer() {
 
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [localComments, setLocalComments] = useState<LocalComment[]>([]);
-  const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [endedDialogOpen, setEndedDialogOpen] = useState(false);
+  const [endingRemaining, setEndingRemaining] = useState<number | null>(null);
   const [waveJoined, setWaveJoined] = useState(false);
   const [waveType, setWaveType] = useState(1);
   const [motionError, setMotionError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // テキスト量に応じてtextareaの高さを自動拡張
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, waveJoined]);
+
   const isKicked = session.kickedUserIds.includes(userId);
+  // 毎秒のカウントダウン再レンダーでも全件コピーしないよう、表示分だけ切り出してメモ化する
+  const displayComments = useMemo(
+    () => session.comments.slice(-MAX_DISPLAY_COMMENTS).reverse(),
+    [session.comments],
+  );
   const { period, sensorActive } = useShake(waveJoined);
   const { waveEnabled, joinWave, leaveWave, sendWavePeriod, sendWaveIdle } = session;
   const hadPeriodRef = useRef(false);
-
-  useEffect(() => {
-    if (sessionId) setLocalComments(loadComments(sessionId));
-  }, [sessionId]);
 
   // ウェーブ参加時にiOSの「取り消す」ダイアログを抑制
   useEffect(() => {
@@ -92,6 +84,21 @@ export default function Viewer() {
       leaveWave();
     }
   }, [waveEnabled, waveJoined, leaveWave]);
+
+  useEffect(() => {
+    if (session.ended) setEndedDialogOpen(true);
+  }, [session.ended]);
+
+  useEffect(() => {
+    if (!session.endingAt) { setEndingRemaining(null); return; }
+    const update = () => {
+      const left = Math.max(0, Math.ceil((session.endingAt! - Date.now()) / 1000));
+      setEndingRemaining(left);
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [session.endingAt]);
 
   // 周期変更をサーバーに送信 / 周期消失時にidle通知
   useEffect(() => {
@@ -132,26 +139,25 @@ export default function Viewer() {
     if (!trimmed || sending || isKicked) return;
 
     session.sendComment(trimmed);
-    const comment: LocalComment = { text: trimmed, timestamp: Date.now() };
-    saveComment(sessionId!, comment);
-    setLocalComments((prev) => [...prev, comment].slice(-MAX_HISTORY));
-
     setText("");
     setSending(true);
     setTimeout(() => setSending(false), 500);
     requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [text, sending, isKicked, session, sessionId]);
+  }, [text, sending, isKicked, session]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && e.metaKey) {
-      e.preventDefault();
-      handleSend();
-    }
+  // 改行を除去しつつ入力を反映
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value.replace(/\n/g, "");
+    if (value.length <= MAX_CHARS) setText(value);
   };
 
-  const displayedComments = expanded
-    ? [...localComments.slice(-MAX_HISTORY)].reverse()
-    : [...localComments.slice(-COLLAPSED_COUNT)].reverse();
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      // Cmd/Ctrl+Enterで送信、単体Enterは改行させない
+      e.preventDefault();
+      if (e.metaKey || e.ctrlKey) handleSend();
+    }
+  };
 
   const renderNotification = (notifText: string) =>
     notifText.split("\n").map((line, i) =>
@@ -172,12 +178,41 @@ export default function Viewer() {
 
   return (
     <Box className={css({ backgroundColor: "#000", height: "100dvh", display: "flex", flexDirection: "column", color: "#fff", overflow: "hidden" })}>
+      {/* セッション終了カウントダウン */}
+      <AnimatePresence>
+        {endingRemaining != null && !session.ended && (
+          <motion.div
+            key="ending"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.35, ease: "easeInOut" }}
+            style={{ overflow: "hidden", flexShrink: 0 }}
+          >
+            <Box className={css({ backgroundColor: "rgba(239,68,68,0.2)", borderBottom: "1px solid rgba(239,68,68,0.4)", padding: "10px 16px" })}>
+              <Text size="3">管理者が退出しました。{endingRemaining}秒以内に再接続がなければセッションは終了します。</Text>
+            </Box>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 通知エリア */}
-      {session.notification && (
-        <Box className={css({ backgroundColor: "rgba(139,92,246,0.2)", borderBottom: "1px solid rgba(139,92,246,0.4)", padding: "10px 16px", animation: "slideDown 0.3s ease-out" })}>
-          <Text size="3">{renderNotification(session.notification)}</Text>
-        </Box>
-      )}
+      <AnimatePresence>
+        {session.notification && (
+          <motion.div
+            key="notification"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.35, ease: "easeInOut" }}
+            style={{ overflow: "hidden", flexShrink: 0 }}
+          >
+            <Box className={css({ backgroundColor: "rgba(139,92,246,0.2)", borderBottom: "1px solid rgba(139,92,246,0.4)", padding: "10px 16px" })}>
+              <Text size="3">{renderNotification(session.notification)}</Text>
+            </Box>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ウェーブ参加エリア */}
       {session.waveEnabled && !isKicked && !waveJoined && (
@@ -236,17 +271,17 @@ export default function Viewer() {
           </Box>
         ) : (
           <>
-            {/* コメント入力（ウェーブ参加中は非表示） */}
-            {!waveJoined && (
+            {/* コメント入力（ウェーブ参加中・終了済みは非表示） */}
+            {!waveJoined && !session.ended && (
               <Flex direction="column" gap="2">
                 <TextArea
                   ref={textareaRef}
                   placeholder="コメントを入力..."
                   value={text}
-                  onChange={(e) => { if (e.target.value.length <= MAX_CHARS) setText(e.target.value); }}
+                  onChange={handleChange}
                   onKeyDown={handleKeyDown}
-                  rows={2}
-                  className={css({ fontSize: "18px !important", resize: "none" })}
+                  rows={1}
+                  className={css({ fontSize: "18px !important", resize: "none", overflow: "hidden" })}
                 />
                 <Flex justify="between" align="center">
                   <Text size="2" color="gray">{text.length}/{MAX_CHARS}</Text>
@@ -258,31 +293,52 @@ export default function Viewer() {
               </Flex>
             )}
 
-            {/* 送信済みコメント一覧 */}
-            {localComments.length > 0 && (
-              <Flex direction="column" gap="1">
-                <Text size="1" color="gray" mb="1">送信済み</Text>
-                {displayedComments.map((c, i) => (
-                  <Flex key={`${c.timestamp}-${i}`} gap="2" align="start" className={css({ padding: "4px 8px", borderRadius: "4px", backgroundColor: "rgba(255,255,255,0.04)" })}>
+            {/* コメント一覧 */}
+            {displayComments.length > 0 && (
+              <Flex direction="column" gap="1" className={css({ flex: 1, minHeight: 0, overflow: "auto" })}>
+                <Text size="1" color="gray" mb="1">コメント</Text>
+                {displayComments.map((c) => (
+                  <Flex
+                    key={c.id}
+                    gap="2"
+                    align="start"
+                    className={css({
+                      padding: "4px 8px",
+                      borderRadius: "4px",
+                      backgroundColor: "rgba(255,255,255,0.04)",
+                      opacity: c.userId === userId ? 1 : 0.4,
+                    })}
+                  >
                     <Text size="1" color="gray" className={css({ flexShrink: 0, fontFamily: "monospace", lineHeight: "1.6" })}>
                       {formatTime(c.timestamp)}
                     </Text>
-                    <Text size="2" className={css({ wordBreak: "break-all" })}>{c.text}</Text>
+                    <Text size="2" className={css({ wordBreak: "break-all" })}>{parseColorCommand(c.text).body}</Text>
                   </Flex>
                 ))}
-                {localComments.length > COLLAPSED_COUNT && (
-                  <Button variant="ghost" size="1" onClick={() => setExpanded((v) => !v)} className={css({ alignSelf: "center" })}>
-                    {expanded ? "閉じる" : "もっと見る"}
-                  </Button>
-                )}
               </Flex>
             )}
           </>
         )}
       </Flex>
 
+      {/* セッション終了ダイアログ */}
+      <Dialog.Root open={endedDialogOpen} onOpenChange={setEndedDialogOpen}>
+        <Dialog.Content maxWidth="320px">
+          <Dialog.Title>セッションが終了しました</Dialog.Title>
+          <Dialog.Description size="2">
+            ご参加ありがとうございました
+          </Dialog.Description>
+          <Flex justify="end" mt="4">
+            <Dialog.Close>
+              <Button variant="soft">閉じる</Button>
+            </Dialog.Close>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
       {/* ボトムバー */}
       <Flex align="center" className={css({ borderTop: "1px solid rgba(255,255,255,0.1)", padding: "8px 16px", gap: "8px", flexShrink: 0 })}>
+        {session.ended && <Badge color="red" variant="solid" size="1">終了済み</Badge>}
         <MarqueeText text={session.sessionName || "---"} className={css({ flex: 1, fontSize: "13px", color: "rgba(255,255,255,0.6)" })} />
         <Dialog.Root open={menuOpen} onOpenChange={setMenuOpen}>
           <Dialog.Trigger>

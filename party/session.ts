@@ -1,11 +1,6 @@
 import type * as Party from "partykit/server";
-
-type Comment = {
-  id: string;
-  text: string;
-  userId: string;
-  timestamp: number;
-};
+import type { Comment, WaveInfo } from "../app/lib/protocol";
+import { encodeMessage, ENDING_GRACE_MS } from "../app/lib/protocol";
 
 type ConnectionMeta = {
   role: "admin" | "viewer" | "screen";
@@ -15,26 +10,14 @@ type ConnectionMeta = {
 type WaveParticipant = {
   waveType: number;
   period: number;
-  color: string;
   idle: boolean;
 };
-
-type WaveInfo = {
-  waveType: number;
-  period: number;
-  count: number;
-  idle: boolean;
-};
-
-const NEON_COLORS = [
-  "#FF00FF", "#00FFFF", "#39FF14", "#FF6600", "#FF0099",
-  "#FFFF00", "#00FF99", "#FF3366", "#9933FF", "#00CCFF",
-];
 
 const MAX_COMMENTS = 500;
 const RATE_LIMIT_MS = 500;
 const MAX_COMMENT_LENGTH = 200;
 const WAVE_BROADCAST_INTERVAL = 500;
+const MAX_QR_SVG_LENGTH = 20_000;
 
 export default class SessionServer implements Party.Server {
   sessionName = "";
@@ -55,29 +38,76 @@ export default class SessionServer implements Party.Server {
 
   qrVisible = false;
   qrSvg: string | null = null;
+  adminToken: string | null = null;
+  ended = false;
+  endingDeadline: number | null = null;
+  endingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(readonly room: Party.Room) {}
+
+  // ルームがハイバネーション/退避から復帰しても、認可・終了状態が巻き戻らないよう永続化する
+  async onStart() {
+    const [adminToken, ended, kickedUserIds, sessionName] = await Promise.all([
+      this.room.storage.get<string>("adminToken"),
+      this.room.storage.get<boolean>("ended"),
+      this.room.storage.get<string[]>("kickedUserIds"),
+      this.room.storage.get<string>("sessionName"),
+    ]);
+    if (adminToken) this.adminToken = adminToken;
+    if (ended) this.ended = true;
+    if (kickedUserIds) this.kickedUserIds = new Set(kickedUserIds);
+    if (sessionName) this.sessionName = sessionName;
+  }
 
   onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
     const url = new URL(ctx.request.url);
     const role = (url.searchParams.get("role") || "viewer") as ConnectionMeta["role"];
     const userId = url.searchParams.get("userId") || conn.id;
 
-    if (this.kickedUserIds.has(userId)) {
-      conn.send(JSON.stringify({ type: "user:kicked", userId }));
+    if (this.ended) {
+      conn.send(encodeMessage({ type: "session:ended" }));
+      conn.close();
+      return;
+    }
+
+    if (role === "admin") {
+      const token = url.searchParams.get("adminToken");
+      if (!token) {
+        conn.send(encodeMessage({ type: "error", message: "管理者トークンが必要です", fatal: true }));
+        conn.close();
+        return;
+      }
+      if (this.adminToken === null) {
+        this.adminToken = token;
+        void this.room.storage.put("adminToken", token);
+      } else if (this.adminToken !== token) {
+        conn.send(encodeMessage({ type: "error", message: "管理者トークンが無効です", fatal: true }));
+        conn.close();
+        return;
+      }
+      this.adminConnections.add(conn.id);
+      if (this.endingTimer) {
+        clearTimeout(this.endingTimer);
+        this.endingTimer = null;
+        this.endingDeadline = null;
+        this.broadcast(encodeMessage({ type: "session:ending-cancelled" }));
+      }
+      if (!this.sessionName) {
+        const name = url.searchParams.get("sessionName");
+        if (name) {
+          this.sessionName = name;
+          void this.room.storage.put("sessionName", name);
+        }
+      }
+      this.broadcastAdminCount();
+    } else if (this.kickedUserIds.has(userId)) {
+      // 有効なトークンを持つ管理者はキック済みuserIdでも締め出さない
+      conn.send(encodeMessage({ type: "user:kicked", userId }));
       conn.close();
       return;
     }
 
     this.connectionMeta.set(conn.id, { role, userId });
-
-    if (role === "admin") {
-      this.adminConnections.add(conn.id);
-      if (!this.sessionName) {
-        const name = url.searchParams.get("sessionName");
-        if (name) this.sessionName = name;
-      }
-    }
 
     if (role === "viewer") {
       this.totalViewers++;
@@ -86,7 +116,7 @@ export default class SessionServer implements Party.Server {
     }
 
     conn.send(
-      JSON.stringify({
+      encodeMessage({
         type: "sync",
         state: {
           sessionName: this.sessionName,
@@ -97,9 +127,9 @@ export default class SessionServer implements Party.Server {
           kickedUserIds: [...this.kickedUserIds],
           waveEnabled: this.waveEnabled,
           waveData: this.aggregateWaveData(),
-          waveUsers: this.getWaveUsers(),
           qrVisible: this.qrVisible,
           qrSvg: this.qrSvg,
+          endingAt: this.endingDeadline,
         },
       }),
     );
@@ -141,6 +171,9 @@ export default class SessionServer implements Party.Server {
       case "admin:qr-toggle":
         if (this.isAdmin(sender)) this.handleQrToggle(msg.visible as boolean, msg.qrSvg as string | undefined);
         break;
+      case "admin:end-session":
+        if (this.isAdmin(sender)) this.endSession();
+        break;
       case "wave:join":
         this.handleWaveJoin(meta.userId, msg.waveType as number);
         break;
@@ -169,6 +202,11 @@ export default class SessionServer implements Party.Server {
 
     if (meta.role === "admin") {
       this.adminConnections.delete(conn.id);
+      if (!this.ended && this.adminConnections.size === 0) {
+        this.startEndingCountdown();
+      } else {
+        this.broadcastAdminCount();
+      }
     }
 
     this.connectionMeta.delete(conn.id);
@@ -183,14 +221,14 @@ export default class SessionServer implements Party.Server {
 
     const trimmed = text.trim();
     if (!trimmed || trimmed.length > MAX_COMMENT_LENGTH) {
-      sender.send(JSON.stringify({ type: "error", message: "コメントが長すぎます" }));
+      sender.send(encodeMessage({ type: "error", message: "コメントが長すぎます" }));
       return;
     }
 
     const now = Date.now();
     const lastTime = this.lastCommentTime.get(meta.userId);
     if (lastTime && now - lastTime < RATE_LIMIT_MS) {
-      sender.send(JSON.stringify({ type: "error", message: "送信が速すぎます" }));
+      sender.send(encodeMessage({ type: "error", message: "送信が速すぎます" }));
       return;
     }
     this.lastCommentTime.set(meta.userId, now);
@@ -207,18 +245,19 @@ export default class SessionServer implements Party.Server {
       this.comments = this.comments.slice(-MAX_COMMENTS);
     }
 
-    this.broadcast(JSON.stringify({ type: "comment:new", comment }));
+    this.broadcast(encodeMessage({ type: "comment:new", comment }));
   }
 
   private handleDeleteComment(commentId: string) {
     this.comments = this.comments.filter((c) => c.id !== commentId);
-    this.broadcast(JSON.stringify({ type: "comment:deleted", commentId }));
+    this.broadcast(encodeMessage({ type: "comment:deleted", commentId }));
   }
 
   private handleKick(userId: string) {
     this.kickedUserIds.add(userId);
+    void this.room.storage.put("kickedUserIds", [...this.kickedUserIds]);
     this.waveParticipants.delete(userId);
-    this.broadcast(JSON.stringify({ type: "user:kicked", userId }));
+    this.broadcast(encodeMessage({ type: "user:kicked", userId }));
 
     for (const conn of this.room.getConnections()) {
       const meta = this.connectionMeta.get(conn.id);
@@ -231,24 +270,31 @@ export default class SessionServer implements Party.Server {
   private handleNotify(text: string) {
     if (!text || typeof text !== "string") return;
     this.notification = text.trim();
-    this.broadcast(JSON.stringify({ type: "notify", text: this.notification }));
+    this.broadcast(encodeMessage({ type: "notify", text: this.notification }));
   }
 
   private handleClearNotify() {
     this.notification = null;
-    this.broadcast(JSON.stringify({ type: "notify:clear" }));
+    this.broadcast(encodeMessage({ type: "notify:clear" }));
   }
 
   private handleBgColor(color: string) {
     if (!color || typeof color !== "string") return;
+    if (!/^#[0-9a-fA-F]{3,8}$/.test(color) && !/^[a-zA-Z]+$/.test(color)) return;
     this.bgColor = color;
-    this.broadcast(JSON.stringify({ type: "bg-color", color }));
+    this.broadcast(encodeMessage({ type: "bg-color", color }));
   }
 
   private handleQrToggle(visible: boolean, qrSvg?: string) {
     this.qrVisible = visible;
-    this.qrSvg = visible && qrSvg ? qrSvg : null;
-    this.broadcast(JSON.stringify({ type: "qr-visible", visible, qrSvg: this.qrSvg }));
+    this.qrSvg =
+      visible &&
+      typeof qrSvg === "string" &&
+      qrSvg.length <= MAX_QR_SVG_LENGTH &&
+      qrSvg.trimStart().startsWith("<svg")
+        ? qrSvg
+        : null;
+    this.broadcast(encodeMessage({ type: "qr-visible", visible, qrSvg: this.qrSvg }));
   }
 
   private handleWaveToggle(enabled: boolean) {
@@ -256,15 +302,13 @@ export default class SessionServer implements Party.Server {
     if (!enabled) {
       this.waveParticipants.clear();
     }
-    this.broadcast(JSON.stringify({ type: "wave:status", enabled }));
+    this.broadcast(encodeMessage({ type: "wave:status", enabled }));
     this.broadcastWaveData();
   }
 
   private handleWaveJoin(userId: string, waveType: number) {
     if (!this.waveEnabled) return;
-    const existing = this.waveParticipants.get(userId);
-    const color = existing?.color || NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
-    this.waveParticipants.set(userId, { waveType, period: 2, color, idle: false });
+    this.waveParticipants.set(userId, { waveType, period: 2, idle: false });
     this.scheduleWaveBroadcast();
   }
 
@@ -276,9 +320,7 @@ export default class SessionServer implements Party.Server {
   private handleWavePeriod(userId: string, seconds: number, waveType: number) {
     if (!this.waveEnabled) return;
     const clamped = Math.max(0.3, Math.min(5, seconds));
-    const existing = this.waveParticipants.get(userId);
-    const color = existing?.color || NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
-    this.waveParticipants.set(userId, { waveType, period: clamped, color, idle: false });
+    this.waveParticipants.set(userId, { waveType, period: clamped, idle: false });
     this.scheduleWaveBroadcast();
   }
 
@@ -320,28 +362,51 @@ export default class SessionServer implements Party.Server {
     }, delay);
   }
 
-  private getWaveUsers() {
-    const result: { userId: string; waveType: number; period: number; color: string }[] = [];
-    for (const [userId, p] of this.waveParticipants) {
-      result.push({ userId, waveType: p.waveType, period: p.period, color: p.color });
-    }
-    return result;
-  }
-
   private broadcastWaveData() {
     this.lastWaveBroadcast = Date.now();
-    const waves = this.aggregateWaveData();
-    const users = this.getWaveUsers();
-    this.broadcast(JSON.stringify({ type: "wave:data", waves, users }));
+    this.broadcast(encodeMessage({ type: "wave:data", waves: this.aggregateWaveData() }));
   }
 
   private broadcastViewerCount() {
     this.broadcast(
-      JSON.stringify({
+      encodeMessage({
         type: "viewer:count",
         count: { total: this.totalViewers, active: this.activeViewers },
       }),
     );
+  }
+
+  private startEndingCountdown() {
+    if (this.endingTimer) return;
+    this.endingDeadline = Date.now() + ENDING_GRACE_MS;
+    this.broadcast(encodeMessage({ type: "session:ending", deadline: this.endingDeadline }));
+    this.endingTimer = setTimeout(() => {
+      this.endingTimer = null;
+      this.endSession();
+    }, ENDING_GRACE_MS);
+  }
+
+  private endSession() {
+    if (this.endingTimer) {
+      clearTimeout(this.endingTimer);
+      this.endingTimer = null;
+    }
+    this.endingDeadline = null;
+    this.ended = true;
+    void this.room.storage.put("ended", true);
+    const msg = encodeMessage({ type: "session:ended" });
+    for (const conn of this.room.getConnections()) {
+      conn.send(msg);
+      conn.close();
+    }
+  }
+
+  // admin:countは管理画面しか使わないため、全接続にばらまかない
+  private broadcastAdminCount() {
+    const msg = encodeMessage({ type: "admin:count", count: this.adminConnections.size });
+    for (const id of this.adminConnections) {
+      this.room.getConnection(id)?.send(msg);
+    }
   }
 
   private broadcast(message: string) {

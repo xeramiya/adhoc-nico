@@ -1,20 +1,43 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { css } from "~/styled-system/css";
-import type { Comment, WaveInfo, WaveUserData } from "~/lib/protocol";
+import type { Comment, WaveInfo } from "~/lib/protocol";
+import { parseColorCommand } from "~/lib/utils";
 import { WAVE_PATTERNS, NEON_COLORS } from "~/lib/protocol";
 
 const ANIMATION_DURATION_MS = 8000;
 const SAFETY_GAP_MS = 300;
-const LANE_HEIGHT = 40;
-const DEPTH_OFFSET = 12;
+const TEXT_REM = 2.5;
+const LANE_REM = 3;
+const DEPTH_REM = 0.75;
 const MAX_DEPTH_LAYERS = 4;
 
 const WAVE_CYCLES_PER_SET = 16;
 const WAVE_SET_GAP_MS = 2000;
 
+const NICO_FONT =
+  '"游ゴシック体", YuGothic, "游ゴシック", "Yu Gothic", "ヒラギノ角ゴ Pro", "Hiragino Kaku Gothic Pro", "メイリオ", Meiryo, "MS PGothic", sans-serif';
+const NICO_OUTLINE =
+  "2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000, 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000";
+
+// getComputedStyleはコメント描画のホットパスで毎回呼ぶには重いためキャッシュする
+let pxPerRem = 0;
+
+function remToPx(rem: number): number {
+  if (typeof document === "undefined") return rem * 16;
+  if (!pxPerRem) {
+    pxPerRem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  }
+  return rem * pxPerRem;
+}
+
+function invalidateRemCache() {
+  pxPerRem = 0;
+}
+
 type FlowingComment = {
   id: string;
   text: string;
+  color: string | null;
   lane: number;
   depth: number;
   key: string;
@@ -46,14 +69,13 @@ type Props = {
   comments: Comment[];
   synced: boolean;
   waveData: WaveInfo[];
-  waveUsers: WaveUserData[];
 };
 
 export function CommentCanvas({ comments, synced, waveData }: Props) {
   const [flowingComments, setFlowingComments] = useState<FlowingComment[]>([]);
   const [laneCount, setLaneCount] = useState(() =>
     typeof window !== "undefined"
-      ? Math.max(1, Math.floor(window.innerHeight / LANE_HEIGHT))
+      ? Math.max(1, Math.floor(window.innerHeight / remToPx(LANE_REM)))
       : 20,
   );
 
@@ -83,7 +105,8 @@ export function CommentCanvas({ comments, synced, waveData }: Props) {
 
   useEffect(() => {
     const onResize = () => {
-      const newCount = Math.max(1, Math.floor(window.innerHeight / LANE_HEIGHT));
+      invalidateRemCache();
+      const newCount = Math.max(1, Math.floor(window.innerHeight / remToPx(LANE_REM)));
       setLaneCount(newCount);
       laneCountRef.current = newCount;
     };
@@ -148,19 +171,28 @@ export function CommentCanvas({ comments, synced, waveData }: Props) {
     });
 
     const ctx = getMeasureCtx();
-    if (ctx) ctx.font = "bold 36px sans-serif";
+    const textPx = remToPx(TEXT_REM);
+    if (ctx) ctx.font = `bold ${textPx}px ${NICO_FONT}`;
     const newFlowing: FlowingComment[] = [];
 
     for (const c of comments) {
       if (seenIdsRef.current.has(c.id)) continue;
       seenIdsRef.current.add(c.id);
-      const textWidth = ctx ? ctx.measureText(c.text).width : c.text.length * 36;
+      const { color, body } = parseColorCommand(c.text);
+      const textWidth = ctx ? ctx.measureText(body).width : body.length * textPx;
       const { lane, depth } = allocateCommentLane(textWidth);
-      newFlowing.push({ id: c.id, text: c.text, lane, depth, key: c.id });
+      newFlowing.push({ id: c.id, text: body, color, lane, depth, key: c.id });
     }
 
     if (newFlowing.length > 0) {
       setFlowingComments((prev) => [...prev, ...newFlowing]);
+    }
+
+    if (seenIdsRef.current.size > 1000) {
+      const activeIds = new Set(comments.map((c) => c.id));
+      for (const id of seenIdsRef.current) {
+        if (!activeIds.has(id)) seenIdsRef.current.delete(id);
+      }
     }
   }, [comments, synced, allocateCommentLane, getMeasureCtx]);
 
@@ -198,8 +230,9 @@ export function CommentCanvas({ comments, synced, waveData }: Props) {
     const text = pattern.repeat(WAVE_CYCLES_PER_SET);
 
     const ctx = getMeasureCtx();
-    if (ctx) ctx.font = "bold 32px sans-serif";
-    const textWidth = ctx ? ctx.measureText(text).width : text.length * 32;
+    const wavePx = remToPx(TEXT_REM);
+    if (ctx) ctx.font = `bold ${wavePx}px ${NICO_FONT}`;
+    const textWidth = ctx ? ctx.measureText(text).width : text.length * wavePx;
     const cycleWidth = textWidth / WAVE_CYCLES_PER_SET;
     const speed = cycleWidth / period;
 
@@ -222,10 +255,10 @@ export function CommentCanvas({ comments, synced, waveData }: Props) {
 
     const el = document.createElement("div");
     el.className = waveElClass;
-    el.style.bottom = `${lane * LANE_HEIGHT + depth * DEPTH_OFFSET}px`;
+    el.style.bottom = `${lane * remToPx(LANE_REM) + depth * remToPx(DEPTH_REM)}px`;
     el.style.opacity = `${Math.max(0.4, 1.0 - depth * 0.2) * channelOpacity}`;
     el.style.color = color;
-    el.style.textShadow = `0 0 8px ${color}80`;
+    el.style.textShadow = `0 0 8px ${color}80, ${NICO_OUTLINE}`;
     el.style.transform = `translateX(${vw}px)`;
     el.textContent = text;
     container.appendChild(el);
@@ -414,8 +447,9 @@ export function CommentCanvas({ comments, synced, waveData }: Props) {
           onAnimationEnd={() => handleCommentEnd(fc.key)}
           className={commentStyle}
           style={{
-            top: `${fc.lane * LANE_HEIGHT + fc.depth * DEPTH_OFFSET}px`,
+            top: `${fc.lane * remToPx(LANE_REM) + fc.depth * remToPx(DEPTH_REM)}px`,
             opacity: Math.max(0.4, 1.0 - fc.depth * 0.2),
+            ...(fc.color ? { color: fc.color } : {}),
           }}
         >
           {fc.text}
@@ -431,9 +465,10 @@ const commentStyle = css({
   left: 0,
   whiteSpace: "nowrap",
   color: "white",
-  fontSize: "36px",
+  fontSize: "2.5rem",
   fontWeight: "bold",
-  textShadow: "2px 2px 4px rgba(0,0,0,0.8)",
+  fontFamily: NICO_FONT,
+  textShadow: NICO_OUTLINE,
   willChange: "transform",
   pointerEvents: "none",
   animation: "commentFlow 8s linear forwards",
@@ -443,8 +478,9 @@ const waveElClass = css({
   position: "absolute",
   left: 0,
   whiteSpace: "nowrap",
-  fontSize: "32px",
+  fontSize: "2.5rem",
   fontWeight: "bold",
+  fontFamily: NICO_FONT,
   willChange: "transform",
   pointerEvents: "none",
 });

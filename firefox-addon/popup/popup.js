@@ -1,93 +1,98 @@
-const hostInput = document.getElementById("host");
-const sessionIdInput = document.getElementById("session-id");
-const connectBtn = document.getElementById("connect-btn");
-const disconnectBtn = document.getElementById("disconnect-btn");
+const sidInput = document.getElementById("sid");
+const tabBtn = document.getElementById("tabBtn");
+const resetBtn = document.getElementById("resetBtn");
 const dot = document.getElementById("dot");
-const statusText = document.getElementById("status-text");
-const tabSection = document.getElementById("tab-section");
-const tabToggleBtn = document.getElementById("tab-toggle-btn");
+const statusText = document.getElementById("statusText");
 
+let isConnected = false;
+let isCurrentTabOn = false;
+let tabAvailable = false;
 let currentTabId = null;
-let tabEnabled = false;
 
-function updateUI(connected, config) {
-  if (connected) {
-    dot.classList.add("on");
-    statusText.textContent = `接続中: ${config.sessionId}`;
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
-    tabSection.style.display = "";
-  } else {
-    dot.classList.remove("on");
-    statusText.textContent = "未接続";
-    connectBtn.disabled = false;
-    disconnectBtn.disabled = true;
-    tabSection.style.display = "none";
-  }
-  updateTabButton();
-}
+const port = browser.runtime.connect({ name: "popup" });
 
-function updateTabButton() {
-  if (tabEnabled) {
-    tabToggleBtn.textContent = "このタブで無効にする";
-    tabToggleBtn.classList.add("active");
-  } else {
-    tabToggleBtn.textContent = "このタブで有効にする";
-    tabToggleBtn.classList.remove("active");
+port.onMessage.addListener((msg) => {
+  switch (msg.type) {
+    case "status":
+      updateStatus(msg);
+      break;
+    case "tabState":
+      isCurrentTabOn = msg.enabled;
+      updateTabBtn(msg.enabled);
+      break;
+    case "sessionSync":
+      if (!isConnected && !isCurrentTabOn) {
+        sidInput.value = msg.sessionId;
+      }
+      break;
   }
-}
+});
+
+port.postMessage({ type: "getStatus" });
+
+browser.storage.local.get(["sessionId"]).then((data) => {
+  if (data.sessionId) sidInput.value = data.sessionId;
+});
 
 browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-  if (tabs[0]) {
-    currentTabId = tabs[0].id;
-    browser.runtime.sendMessage({ action: "get-status", tabId: currentTabId }).then((res) => {
-      if (res) {
-        updateUI(res.connected, res.config);
-        tabEnabled = res.enabledTabId;
-        updateTabButton();
-        if (res.config.host) hostInput.value = res.config.host;
-        if (res.config.sessionId) sessionIdInput.value = res.config.sessionId;
-      }
+  if (tabs[0]?.id == null) return;
+  currentTabId = tabs[0].id;
+
+  browser.tabs
+    .sendMessage(currentTabId, { type: "ping" })
+    .then(() => {
+      tabAvailable = true;
+      port.postMessage({ type: "getTabState", tabId: currentTabId });
+    })
+    .catch(() => {
+      tabAvailable = false;
+      tabBtn.disabled = true;
+      tabBtn.textContent = "このページでは利用できません";
     });
-  }
 });
 
-browser.storage.local.get(["sessionId", "host"]).then((data) => {
-  if (data.host && !hostInput.value) hostInput.value = data.host;
-  if (data.sessionId && !sessionIdInput.value) sessionIdInput.value = data.sessionId;
-});
+tabBtn.addEventListener("click", () => {
+  if (!tabAvailable || currentTabId == null) return;
 
-connectBtn.addEventListener("click", () => {
-  const sessionId = sessionIdInput.value.trim();
-  const host = hostInput.value.trim() || "adhocnico.uebit.net";
-  if (!sessionId) {
-    sessionIdInput.focus();
-    return;
-  }
-  browser.runtime.sendMessage({ action: "connect", sessionId, host });
-  updateUI(true, { sessionId, host });
-});
-
-disconnectBtn.addEventListener("click", () => {
-  browser.runtime.sendMessage({ action: "disconnect" });
-  tabEnabled = false;
-  updateUI(false, {});
-});
-
-tabToggleBtn.addEventListener("click", () => {
-  if (!currentTabId) return;
-  if (tabEnabled) {
-    browser.runtime.sendMessage({ action: "disable-tab", tabId: currentTabId });
-    tabEnabled = false;
+  if (isCurrentTabOn) {
+    port.postMessage({ type: "toggleTab", tabId: currentTabId });
   } else {
-    browser.runtime.sendMessage({ action: "enable-tab", tabId: currentTabId });
-    tabEnabled = true;
+    const sessionId = sidInput.value.trim();
+    if (!sessionId) return;
+    browser.storage.local.set({ sessionId });
+    port.postMessage({ type: "toggleTab", tabId: currentTabId, sessionId });
   }
-  updateTabButton();
 });
 
-browser.runtime.onMessage.addListener((message) => {
-  if (message.action === "status") {
-    updateUI(message.connected, message.config);
-  }
+resetBtn.addEventListener("click", () => {
+  port.postMessage({ type: "reset" });
 });
+
+function updateStatus(s) {
+  isConnected = s.connected;
+  const locked = s.connected || s.hasEnabledTabs;
+  sidInput.disabled = locked;
+
+  if (s.connected) {
+    dot.className = "dot on";
+    statusText.textContent = s.sessionName || "接続中";
+  } else {
+    dot.className = "dot";
+    statusText.textContent = "未接続";
+  }
+
+  if (!s.hasEnabledTabs) {
+    isCurrentTabOn = false;
+    if (tabAvailable) updateTabBtn(false);
+  }
+}
+
+function updateTabBtn(enabled) {
+  if (enabled) {
+    tabBtn.className = "btn tab-toggle active";
+    tabBtn.textContent = "このタブ: ON";
+  } else {
+    tabBtn.className = "btn tab-toggle";
+    tabBtn.textContent = "このタブ: OFF";
+  }
+}

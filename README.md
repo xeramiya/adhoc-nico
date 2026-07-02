@@ -1,87 +1,57 @@
-# Welcome to React Router!
+# アドホック・ニコ
 
-A modern, production-ready template for building full-stack React applications using React Router.
+React RouterとPartyKitで作るリアルタイムコメントオーバーレイ（ニコニコ風）アプリ。
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/remix-run/react-router-templates/tree/main/default)
+- 本番ドメイン: `adhoc-nico.uebit.net`
+- フロントエンド: React Router (SSR)
+- リアルタイム基盤: PartyKit (`party/session.ts`)
+- ブラウザ拡張: `firefox-addon/`（任意のページにコメントをオーバーレイ表示）
 
-## Features
+## セットアップ
 
-- 🚀 Server-side rendering
-- ⚡️ Hot Module Replacement (HMR)
-- 📦 Asset bundling and optimization
-- 🔄 Data loading and mutations
-- 🔒 TypeScript by default
-- 🎉 TailwindCSS for styling
-- 📖 [React Router docs](https://reactrouter.com/)
-
-## Getting Started
-
-### Installation
-
-Install the dependencies:
+依存関係をインストール:
 
 ```bash
-npm install
+pnpm install
 ```
 
-### Development
+## 開発
 
-Start the development server with HMR:
+HMR付きの開発サーバー（React Router + PartyKit + HTTPSプロキシ）を起動:
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
-Your application will be available at `http://localhost:5173`.
+- アプリ: `https://localhost:3443/`（同一LAN内の他端末からは`https://<LAN IP>:3443/`）
+- PartyKit devサーバー: `localhost:1999`
 
-## Building for Production
+## 環境変数
 
-Create a production build:
+本番のPartyKitホストは環境変数で指定する。`.env`に以下を設定:
+
+```
+VITE_PARTY_HOST=adhoc-nico.uebit.net
+```
+
+開発時（localhostやプライベートIP）では自動的に現在のホストへ接続するため、設定は不要。
+
+## ビルド
 
 ```bash
-npm run build
+pnpm build
 ```
 
-## Deployment
+## デプロイ
 
-### Docker Deployment
-
-To build and run using Docker:
+PartyKitへデプロイする（カスタムドメインは`partykit.json`の`domain`で`adhoc-nico.uebit.net`を指定済み）:
 
 ```bash
-docker build -t my-app .
-
-# Run the container
-docker run -p 3000:3000 my-app
+npx partykit deploy
 ```
 
-The containerized application can be deployed to any platform that supports Docker, including:
+`main`ブランチへのpushでGitHub Actions（`.github/workflows/deploy-partykit.yml`）が自動デプロイする。
 
-- AWS ECS
-- Google Cloud Run
-- Azure Container Apps
-- Digital Ocean App Platform
-- Fly.io
-- Railway
+## Firefox拡張
 
-### DIY Deployment
-
-If you're familiar with deploying Node applications, the built-in app server is production-ready.
-
-Make sure to deploy the output of `npm run build`
-
-```
-├── package.json
-├── package-lock.json (or pnpm-lock.yaml, or bun.lockb)
-├── build/
-│   ├── client/    # Static assets
-│   └── server/    # Server-side code
-```
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
-
----
-
-Built with ❤️ using React Router.
+`firefox-addon/`を`about:debugging`から一時的に読み込む。接続先ホストは`firefox-addon/config.js`の`ADHOC_NICO_HOST`で設定する。ポップアップでセッションIDを入力して接続すると、現在のタブにコメントがオーバーレイ表示される。

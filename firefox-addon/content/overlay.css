@@ -9,29 +9,32 @@
   overflow: hidden;
 }
 
+@keyframes adhoc-nico-flow {
+  0% { transform: translateX(100vw); }
+  100% { transform: translateX(-100%); }
+}
+
+/* フォントサイズ・ファミリー・アニメーション時間はconfig.jsの定数からJSで設定する */
 .adhoc-nico-comment {
   position: absolute;
   left: 0;
   white-space: nowrap;
   color: white;
-  font-size: 36px;
   font-weight: bold;
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
-    Meiryo, sans-serif;
-  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+  text-shadow: 2px 0 0 #000, -2px 0 0 #000, 0 2px 0 #000, 0 -2px 0 #000,
+    1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000;
   will-change: transform;
   pointer-events: none;
-  animation: adhoc-nico-flow 5s linear forwards;
+  animation: adhoc-nico-flow linear forwards;
 }
 
 .adhoc-nico-wave {
   position: absolute;
   left: 0;
   white-space: nowrap;
-  font-size: 32px;
+  color: rgba(0, 255, 255, 0.7);
   font-weight: bold;
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
-    Meiryo, sans-serif;
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
   will-change: transform;
   pointer-events: none;
   animation: adhoc-nico-flow linear forwards;
@@ -43,13 +46,4 @@
   left: 32px;
   pointer-events: none;
   filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.3));
-}
-
-@keyframes adhoc-nico-flow {
-  0% {
-    transform: translateX(100vw);
-  }
-  100% {
-    transform: translateX(-100%);
-  }
 }

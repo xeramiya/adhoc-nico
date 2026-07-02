@@ -2,6 +2,7 @@ import { useParams } from "react-router";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { css } from "~/styled-system/css";
 import { useSession } from "~/lib/use-party";
+import { getAudienceUrl } from "~/lib/utils";
 import { CommentCanvas } from "~/components/comment-canvas";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -9,20 +10,13 @@ const IDLE_TIMEOUT = 2000;
 
 export default function Screen() {
   const { sessionId } = useParams();
-  const { comments, bgColor, synced, waveData, waveUsers, qrVisible } = useSession(
+  const session = useSession(
     sessionId!,
     "screen",
     "screen-display",
   );
-
-  const isLocal = typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || /^(192|10|172)\.\d/.test(window.location.hostname));
-  const audienceUrl =
-    typeof window !== "undefined"
-      ? isLocal
-        ? `${window.location.protocol}//${__DEV_LAN_IP__}:${window.location.port}/${sessionId}`
-        : `${window.location.origin}/${sessionId}`
-      : "";
+  const { comments, bgColor, synced, waveData, qrVisible, ended } = session;
+  const audienceUrl = getAudienceUrl(sessionId!);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -61,6 +55,10 @@ export default function Screen() {
     }
   }, []);
 
+  if (ended) {
+    return <div className={css({ w: "100vw", h: "100vh", backgroundColor: "#000" })} />;
+  }
+
   return (
     <div
       ref={containerRef}
@@ -76,7 +74,7 @@ export default function Screen() {
         cursor: cursorHidden ? "none" : "default",
       }}
     >
-      <CommentCanvas comments={comments} synced={synced} waveData={waveData} waveUsers={waveUsers} />
+      <CommentCanvas comments={comments} synced={synced} waveData={waveData} />
       {qrVisible && audienceUrl && (
         <div
           className={css({

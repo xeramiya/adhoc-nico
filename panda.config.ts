@@ -32,6 +32,10 @@ export default defineConfig({
           "0%": { transform: "translateY(-100%)", opacity: "0" },
           "100%": { transform: "translateY(0)", opacity: "1" },
         },
+        ripple: {
+          "0%": { transform: "scale(1)", opacity: "0.6" },
+          "100%": { transform: "scale(3.5)", opacity: "0" },
+        },
       },
     },
   },

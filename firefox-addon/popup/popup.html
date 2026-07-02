@@ -1,32 +1,26 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
-    <h1>Adhoc Nico</h1>
-    <div class="status" id="status">
-      <span class="dot" id="dot"></span>
-      <span id="status-text">未接続</span>
+    <h1>アドホック・ニコ</h1>
+    <div class="status">
+      <div id="dot" class="dot"></div>
+      <span id="statusText">未接続</span>
     </div>
     <div class="field">
-      <label for="host">サーバー</label>
-      <input type="text" id="host" placeholder="adhocnico.uebit.net">
-    </div>
-    <div class="field">
-      <label for="session-id">セッションID</label>
-      <input type="text" id="session-id" placeholder="セッションIDを貼り付け">
+      <label for="sid">セッションID</label>
+      <input type="text" id="sid" placeholder="管理画面から送信または手動入力">
     </div>
     <div class="actions">
-      <button id="connect-btn" class="btn primary">接続</button>
-      <button id="disconnect-btn" class="btn danger" disabled>切断</button>
-    </div>
-    <div class="tab-section" id="tab-section" style="display:none">
-      <button id="tab-toggle-btn" class="btn tab-toggle">このタブで有効にする</button>
+      <button id="tabBtn" class="btn tab-toggle">このタブ: OFF</button>
+      <button id="resetBtn" class="btn reset" title="リセット">↻</button>
     </div>
   </div>
+  <script src="../config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
